@@ -1,4 +1,4 @@
-from backend.biovision_web import create_app
+from .biovision_web import create_app
 
 
 app = create_app()

@@ -1,20 +1,5 @@
-# Database
+# Banco de dados
 
-Use esta pasta para documentar a estrutura do banco de dados.
+O projeto usa o MySQL configurado pelas variaveis `BIOVISION_DB_*`. A tabela principal e `especie`; imagens sao caminhos de arquivos, nunca BLOB ou Base64.
 
-Pode entrar aqui:
-
-- `schema.sql` com a criacao das tabelas;
-- migrations pequenas;
-- exemplos anonimizados;
-- explicacoes de tabelas e campos.
-
-Nao coloque aqui:
-
-- dump completo com dados reais;
-- senhas;
-- credenciais;
-- dados sensiveis;
-- arquivos grandes.
-
-As credenciais reais devem ficar no `.env` local.
+Dumps locais ficam ignorados pelo Git.

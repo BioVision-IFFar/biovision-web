@@ -1,0 +1,12 @@
+BioVision Air cattle detector
+
+Model: cattledetect_single/best.pt
+Source: https://huggingface.co/Arvin26/Cattle-detection-model
+Project: https://github.com/jianglong26/Beef-Cattle-Growth-Analysis
+Related paper: https://doi.org/10.1016/j.compag.2026.111559
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License text: https://creativecommons.org/licenses/by/4.0/
+
+The model is mapped to the "boi" category by BioVision Air because its
+checkpoint stores the single trained cattle class under the generic label
+"item".

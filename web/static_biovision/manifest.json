@@ -1,19 +1,20 @@
 {
-  "name": "Classificador de Espécies",
+  "name": "BioVision - Identificação de Fauna",
   "short_name": "BioVision",
-  "start_url": "/",
+  "start_url": "/biovision/",
+  "scope": "/biovision/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#4CAF50",
-  "orientation": "portrait",
+  "background_color": "#050b07",
+  "theme_color": "#061a11",
+  "orientation": "any",
   "icons": [
     {
-      "src": "/static/icons/icon-192.png",
+      "src": "/static_biovision/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/static/icons/icon-512.png",
+      "src": "/static_biovision/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png"
     }

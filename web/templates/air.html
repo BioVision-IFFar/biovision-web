@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="pt-br" class="page-air-root">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>BioVision Air - Contagem por vídeo</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Outfit:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='1802') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+  <link rel="preload" as="image" href="{{ url_for('static', filename='icons/biovision_air_background_desktop_v2.png') }}" media="(min-width: 821px), (min-width: 761px) and (orientation: landscape)" fetchpriority="high">
+  <link rel="preload" as="image" href="{{ url_for('static', filename='icons/biovision_air_background_mobile_v2.png') }}" media="(max-width: 760px), (max-width: 820px) and (orientation: portrait)" fetchpriority="high">
+  <meta name="theme-color" content="#01040a">
+
+  <link rel="icon" href="{{ url_for('static', filename='icons/favicon.ico') }}" type="image/x-icon">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-512.png') }}">
+</head>
+<body class="page-air">
+  <div class="grain" aria-hidden="true"></div>
+
+  <nav class="nav">
+    <div class="nav-inner">
+      <div class="nav-brand" aria-label="Biovision">
+        <img src="{{ url_for('static', filename='icons/logo_biovision_air.png') }}" alt="BioVision Air" class="nav-logo nav-logo-air">
+      </div>
+      <div class="nav-actions">
+        <a href="{{ url_for('index') }}" class="nav-link nav-link-air">Início</a>
+      </div>
+    </div>
+  </nav>
+
+  <main class="air-main" data-max-duration="30">
+    <section class="air-showcase anim-up" style="--d:0">
+      <div class="air-showcase-layout">
+        <div class="air-showcase-content">
+          <img src="{{ url_for('static', filename='icons/biovision_air_hero_definitivo.png') }}" alt="BioVision Air" class="air-showcase-wordmark" fetchpriority="high">
+          <p>Monitoramento aéreo com identificação e contagem de animais em vídeos captados por drone.</p>
+          <a href="#airProcessamento" class="air-showcase-cta">Processar vídeo <span aria-hidden="true">↓</span></a>
+        </div>
+      </div>
+
+      <div class="air-showcase-features" role="list" aria-label="Recursos do BioVision Air">
+        <article class="air-showcase-feature" role="listitem">
+          <span class="air-feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="7"></circle>
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path>
+            </svg>
+          </span>
+          <span>
+            <strong>Identificação</strong>
+            <small>Reconhecimento automático de animais.</small>
+          </span>
+        </article>
+
+        <article class="air-showcase-feature" role="listitem">
+          <span class="air-feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="8" cy="8" r="3"></circle>
+              <circle cx="17" cy="9" r="2.5"></circle>
+              <path d="M3 20v-2a5 5 0 0 1 10 0v2M14 20v-1.5a4 4 0 0 1 7-2.7V20"></path>
+            </svg>
+          </span>
+          <span>
+            <strong>Contagem</strong>
+            <small>Totais organizados por classe.</small>
+          </span>
+        </article>
+
+        <article class="air-showcase-feature" role="listitem">
+          <span class="air-feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 7v5l3 2"></path>
+            </svg>
+          </span>
+          <span>
+            <strong>Análise ágil</strong>
+            <small>Vídeos de até 30 segundos.</small>
+          </span>
+        </article>
+      </div>
+    </section>
+
+    <section class="air-process-section" id="airProcessamento">
+      <header class="air-process-heading">
+        <span>BioVision Air</span>
+        <h1 id="airPanelTitle">Envie o vídeo do drone</h1>
+        <p>Identificação e contagem em gravações de até 30 segundos.</p>
+      </header>
+
+      <section class="air-simple-card" aria-labelledby="airPanelTitle">
+          <form id="airForm" class="air-form" enctype="multipart/form-data">
+            <div class="air-dropzone" id="airDropzone" role="button" tabindex="0">
+              <div class="upload-icon-wrap">
+                <svg class="upload-svg" width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <div class="upload-pulse"></div>
+              </div>
+              <h3 class="upload-title">Selecione ou arraste o vídeo</h3>
+              <p class="upload-subtitle">Clique nesta área para escolher o arquivo</p>
+              <p class="upload-formats">MP4, MOV, AVI, MKV, M4V ou WEBM - max. 30s</p>
+            </div>
+
+            <input type="file" name="video" id="airVideo" accept="video/*" hidden>
+            <div class="upload-action-row">
+              <button type="submit" id="airSubmit" class="btn-identify upload-action-main" disabled>Processar vídeo</button>
+            </div>
+
+            <div class="air-video-preview" id="airVideoPreview" hidden>
+              <video id="airPreview" controls muted playsinline></video>
+              <div>
+                <span class="preview-badge">Vídeo selecionado</span>
+                <p id="airFileInfo"></p>
+              </div>
+            </div>
+
+            <button type="button" id="airReset" class="btn-nova" hidden>Nova contagem</button>
+          </form>
+
+          <div id="airLoading" class="loading air-loading" role="status" aria-live="polite" hidden>
+            <div class="spinner-group">
+              <div class="spinner" aria-hidden="true"></div>
+              <div class="spinner-ring" aria-hidden="true"></div>
+            </div>
+            <p id="airLoadingText">Processando vídeo...</p>
+            <div class="analysis-progress" aria-label="Progresso do processamento">
+              <div class="analysis-progress-track">
+                <span id="airProgressBar" class="analysis-progress-bar"></span>
+              </div>
+              <div class="analysis-progress-meta">
+                <strong id="airProgressValue">0%</strong>
+                <span id="airElapsed">Tempo decorrido: 0s</span>
+              </div>
+            </div>
+          </div>
+      </section>
+    </section>
+
+    <div id="airResultado" class="air-result-panel air-result-inline" aria-live="polite" hidden></div>
+  </main>
+
+  <script src="{{ url_for('static', filename='js/app.js', v='2008') }}"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/biovision/service-worker.js").catch(() => {});
+    }
+  </script>
+</body>
+</html>

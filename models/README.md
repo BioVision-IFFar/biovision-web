@@ -1,10 +1,11 @@
-Coloque aqui os modelos locais usados pela aplicacao.
+# Modelos locais
 
-Arquivos de modelo, pesos e dumps nao devem ser versionados no GitHub.
-Configure o caminho do modelo com a variavel:
+Esta pasta contem os pesos usados pela aplicacao. Eles sao versionados no GitHub por meio do Git LFS para que um clone completo ja traga tudo que o backend precisa.
 
-BIOVISION_MODEL_PATH=models/modelo_01.keras
+Arquivos esperados pelo backend:
 
-Para publicar um modelo, use um armazenamento proprio para artefatos
-(release privada, drive institucional, bucket, ou servidor interno), nao o
-historico Git comum.
+- `biovision_species.ckpt`
+- `biovision_air_cattle.pt`
+- `yolo11x.pt`
+- `birdnet/acoustic_model_v2.4_fp32.tflite`
+- `birdnet/species_labels.txt`
