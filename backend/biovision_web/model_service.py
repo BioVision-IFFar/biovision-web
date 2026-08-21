@@ -1,6 +1,5 @@
 import atexit
 import copy
-import csv
 import io
 import json
 import math
@@ -50,8 +49,10 @@ BIRDNET_ACCEPT_CONFIDENCE = 0.68
 BIRDNET_SECONDARY_CONFIDENCE = 0.58
 BIRDNET_MIN_MARGIN = 0.08
 BIRDNET_MODEL_VERSION = "2.4"
-BIRDNET_BACKEND = "tf"
+BIRDNET_BACKEND = "litert"
 BIRDNET_PRECISION = "fp32"
+BIRDNET_SAMPLE_RATE = 48000
+BIRDNET_BATCH_SIZE = 4
 
 species_model = None
 species_device = None
@@ -1148,14 +1149,9 @@ def obter_modelo_birdnet():
         if birdnet_error is not None:
             raise RuntimeError(birdnet_error)
 
-        BIRDNET_DATA_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            import birdnet
-        except ImportError as exc:
-            birdnet_error = "BirdNET não está instalado."
-            raise RuntimeError(birdnet_error) from exc
+            from ai_edge_litert.interpreter import Interpreter
 
-        try:
             if not BIRDNET_MODEL_PATH.is_file():
                 raise FileNotFoundError(
                     f"Modelo acústico não encontrado em: {BIRDNET_MODEL_PATH}"
@@ -1165,28 +1161,68 @@ def obter_modelo_birdnet():
                     f"Índice acústico não encontrado em: {BIRDNET_LABELS_PATH}"
                 )
 
-            model = birdnet.load_custom(
-                "acoustic",
-                BIRDNET_MODEL_VERSION,
-                BIRDNET_BACKEND,
-                str(BIRDNET_MODEL_PATH),
-                str(BIRDNET_LABELS_PATH),
-                precision=BIRDNET_PRECISION,
-                check_validity=False,
-                classifier_type="replace",
+            labels = [
+                line.strip()
+                for line in BIRDNET_LABELS_PATH.read_text(
+                    encoding="utf-8-sig"
+                ).splitlines()
+                if line.strip()
+            ]
+            interpreter = Interpreter(
+                model_path=str(BIRDNET_MODEL_PATH),
+                num_threads=2,
             )
+            input_details = interpreter.get_input_details()[0]
+            output_details = interpreter.get_output_details()[0]
+            input_shape = np.asarray(input_details["shape"], dtype=np.int64)
+            if input_shape.size != 2 or int(input_shape[-1]) <= 0:
+                raise RuntimeError(
+                    f"Formato de entrada acústica inesperado: {input_shape.tolist()}"
+                )
+
+            segment_samples = int(input_shape[-1])
+            interpreter.resize_tensor_input(
+                int(input_details["index"]),
+                [BIRDNET_BATCH_SIZE, segment_samples],
+                strict=False,
+            )
+            interpreter.allocate_tensors()
+            input_details = interpreter.get_input_details()[0]
+            output_details = interpreter.get_output_details()[0]
+            output_shape = np.asarray(output_details["shape"], dtype=np.int64)
+            if output_shape.size != 2 or int(output_shape[-1]) != len(labels):
+                raise RuntimeError(
+                    "O índice acústico não combina com a saída do modelo "
+                    f"({len(labels)} rótulos para {output_shape.tolist()})."
+                )
+
             supported = {
-                str(name).replace(" ", "_").strip().lower()
+                str(name).replace(" ", "_").strip().lower(): str(name).strip()
                 for name in (class_names or [])
             }
             birdnet_species_filter = []
-            for label in getattr(model, "species_list", ()):
-                scientific_name = str(label).partition("_")[0]
+            for index, label in enumerate(labels):
+                scientific_name, _, common_name = str(label).partition("_")
                 normalized = scientific_name.replace(" ", "_").strip().lower()
                 if normalized in supported:
-                    birdnet_species_filter.append(str(label))
+                    birdnet_species_filter.append({
+                        "index": index,
+                        "raw_label": supported[normalized],
+                        "common_name": common_name.strip(),
+                    })
 
-            birdnet_model = model
+            if not birdnet_species_filter:
+                raise RuntimeError(
+                    "Nenhuma espécie do índice do BioVision foi encontrada no modelo acústico."
+                )
+
+            birdnet_model = {
+                "interpreter": interpreter,
+                "input_index": int(input_details["index"]),
+                "output_index": int(output_details["index"]),
+                "segment_samples": segment_samples,
+                "batch_size": BIRDNET_BATCH_SIZE,
+            }
             birdnet_runtime = {
                 "version": BIRDNET_MODEL_VERSION,
                 "backend": BIRDNET_BACKEND,
@@ -1199,6 +1235,9 @@ def obter_modelo_birdnet():
                 f"({BIRDNET_MODEL_VERSION}/{BIRDNET_BACKEND}/{BIRDNET_PRECISION})."
             )
             return birdnet_model
+        except ImportError as exc:
+            birdnet_error = "LiteRT não está instalado para executar o modelo acústico."
+            raise RuntimeError(birdnet_error) from exc
         except Exception as exc:
             birdnet_error = f"Erro ao carregar o modelo acústico BirdNET: {exc}"
             raise RuntimeError(birdnet_error) from exc
@@ -1209,54 +1248,77 @@ def identificar_audio_birdnet(source, progress_callback=None):
     prepared_audio, duration = preparar_audio_birdnet(source)
     emitir_progresso(progress_callback, 24, "Classificador acústico pronto")
     model = obter_modelo_birdnet()
-    predictions_path = Path(source).parent / "birdnet_predictions.csv"
+    samples, sample_rate, decoded_duration = carregar_audio_com_pyav(
+        prepared_audio,
+        sample_rate=BIRDNET_SAMPLE_RATE,
+    )
+    if sample_rate != BIRDNET_SAMPLE_RATE:
+        raise RuntimeError(
+            f"Taxa de amostragem acústica inválida: {sample_rate} Hz."
+        )
+    duration = decoded_duration or duration
 
     emitir_progresso(progress_callback, 38, "Comparando vocalizações em segmentos de áudio")
-    with birdnet_inference_lock:
-        predict_options = {
-            "top_k": 5,
-            "n_producers": 1,
-            "n_workers": 1,
-            "batch_size": 4,
-            "prefetch_ratio": 1,
-            "default_confidence_threshold": 0.12,
-            "device": "CPU",
-            "show_stats": None,
-        }
-        if birdnet_species_filter:
-            predict_options["custom_species_list"] = birdnet_species_filter
-        predictions = model.predict(str(prepared_audio), **predict_options)
-        predictions.to_csv(str(predictions_path), silent=True)
-
-    supported = {
-        str(name).strip().lower(): str(name).strip()
-        for name in (class_names or [])
-    }
     grouped = defaultdict(list)
-    with open(predictions_path, "r", encoding="utf-8-sig", newline="") as csv_file:
-        for row in csv.DictReader(csv_file):
-            species_name = str(row.get("species_name") or "").strip()
-            scientific_name = str(row.get("scientific_name") or "").strip()
-            common_name = str(row.get("common_name") or "").strip()
-            if not scientific_name and species_name:
-                scientific_name, _, inferred_common = species_name.partition("_")
-                common_name = common_name or inferred_common
-            raw_candidate = scientific_name.replace(" ", "_").strip("_")
-            raw_label = supported.get(raw_candidate.lower())
-            if not raw_label:
-                continue
-            try:
-                confidence = float(row.get("confidence") or 0.0)
-            except (TypeError, ValueError):
-                continue
-            if confidence < BIRDNET_SECONDARY_CONFIDENCE:
-                continue
-            grouped[raw_label].append({
-                "confidence": confidence,
-                "common_name": common_name,
-                "start_time": str(row.get("start_time") or row.get("start") or ""),
-                "end_time": str(row.get("end_time") or row.get("end") or ""),
-            })
+    with birdnet_inference_lock:
+        interpreter = model["interpreter"]
+        segment_samples = int(model["segment_samples"])
+        batch_size = int(model["batch_size"])
+        segment_count = max(1, math.ceil(len(samples) / segment_samples))
+        filter_indexes = np.asarray(
+            [item["index"] for item in birdnet_species_filter],
+            dtype=np.int64,
+        )
+
+        for batch_start in range(0, segment_count, batch_size):
+            actual_batch_size = min(batch_size, segment_count - batch_start)
+            batch = np.zeros((batch_size, segment_samples), dtype=np.float32)
+            for offset in range(actual_batch_size):
+                segment_index = batch_start + offset
+                start = segment_index * segment_samples
+                end = min(start + segment_samples, len(samples))
+                if end > start:
+                    batch[offset, :end - start] = samples[start:end]
+
+            interpreter.set_tensor(model["input_index"], batch)
+            interpreter.invoke()
+            logits = np.asarray(
+                interpreter.get_tensor(model["output_index"]),
+                dtype=np.float32,
+            )[:actual_batch_size]
+            probabilities = 1.0 / (1.0 + np.exp(-np.clip(logits, -40.0, 40.0)))
+            supported_probabilities = probabilities[:, filter_indexes]
+
+            for offset in range(actual_batch_size):
+                scores = supported_probabilities[offset]
+                top_count = min(5, len(scores))
+                top_positions = np.argpartition(scores, -top_count)[-top_count:]
+                top_positions = top_positions[np.argsort(scores[top_positions])[::-1]]
+                segment_index = batch_start + offset
+                start_seconds = segment_index * segment_samples / BIRDNET_SAMPLE_RATE
+                end_seconds = min(
+                    (segment_index + 1) * segment_samples / BIRDNET_SAMPLE_RATE,
+                    duration,
+                )
+                for position in top_positions:
+                    confidence = float(scores[position])
+                    if confidence < BIRDNET_SECONDARY_CONFIDENCE:
+                        continue
+                    species = birdnet_species_filter[int(position)]
+                    grouped[species["raw_label"]].append({
+                        "confidence": confidence,
+                        "common_name": species["common_name"],
+                        "start_time": f"{start_seconds:.2f}s",
+                        "end_time": f"{end_seconds:.2f}s",
+                    })
+
+            completed = batch_start + actual_batch_size
+            progress = 38 + round(42 * completed / segment_count)
+            emitir_progresso(
+                progress_callback,
+                progress,
+                "Comparando vocalizações em segmentos de áudio",
+            )
 
     emitir_progresso(progress_callback, 84, "Validando a confiança da identificação")
     ranked = []
