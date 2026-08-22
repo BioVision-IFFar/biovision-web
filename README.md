@@ -31,3 +31,14 @@ gunicorn --config gunicorn.conf.py backend.wsgi:app
 ```
 
 O Gunicorn usa um único processo com múltiplas threads porque a fila de análises fica em memória. Os modelos são carregados uma vez nesse processo antes de ele começar a atender requisições.
+
+## Produção com uso reduzido de disco
+
+O `requirements.txt` usa as distribuições oficiais CPU-only do PyTorch. Para evitar cache do `pip` e a cópia adicional dos modelos mantida pelo Git LFS, gere a imagem de produção com o `Dockerfile`:
+
+```bash
+docker build -t biovision-iffar .
+docker run --env-file .env -p 5001:5001 biovision-iffar
+```
+
+O `.dockerignore` não envia `.git`, banco de desenvolvimento, documentação, treinamento ou arquivos temporários para a imagem. Os modelos necessários continuam incluídos uma única vez.
