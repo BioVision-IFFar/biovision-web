@@ -456,7 +456,10 @@ def carregar_yolo(cache_key, model_path):
         try:
             from ultralytics import YOLO
         except ImportError as exc:
-            raise RuntimeError("Instale a dependencia ultralytics para usar os modelos de video.") from exc
+            raise RuntimeError(
+                "Nao foi possivel importar o Ultralytics/OpenCV. "
+                "Em servidores sem interface grafica, instale ultralytics-opencv-headless."
+            ) from exc
 
         yolo_cache[cache_key] = YOLO(str(model_path))
         yolo_inference_locks[cache_key] = threading.Lock()
@@ -486,7 +489,7 @@ def metadados_video(video_path):
     try:
         import cv2
     except ImportError as exc:
-        raise RuntimeError("Instale opencv-python para validar a duracao do video.") from exc
+        raise RuntimeError("Instale opencv-python-headless para validar a duracao do video.") from exc
 
     captura = cv2.VideoCapture(str(video_path))
     try:

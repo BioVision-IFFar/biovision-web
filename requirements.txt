@@ -11,5 +11,5 @@ torchvision==0.28.0
 timm>=1.0.26
 av>=14.0.0
 ai-edge-litert==2.1.6
-opencv-python>=4.13.0,<5.0
-ultralytics==8.4.116
+opencv-python-headless>=4.13.0,<5.0
+ultralytics-opencv-headless==8.4.116
