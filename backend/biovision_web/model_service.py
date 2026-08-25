@@ -385,6 +385,9 @@ IDENTIFY_VIDEO_MAX_SECONDS = 60
 AIR_ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".webm"}
 
 AIR_CATTLE_CONFIDENCE = 0.35
+AIR_GENERAL_CATTLE_CONFIRMATION_CONFIDENCE = 0.45
+HOMO_SAPIENS_RAW_LABEL = "Homo_sapiens"
+HOMO_SAPIENS_LABEL = nome_classe_legivel(HOMO_SAPIENS_RAW_LABEL)
 
 AIR_CLASS_IDS = {
     "boi": 19,
@@ -394,18 +397,14 @@ AIR_CLASS_IDS = {
     "ave": 14,
 }
 AIR_CLASS_BY_ID = {class_id: name for name, class_id in AIR_CLASS_IDS.items()}
-AIR_GENERAL_CLASS_IDS = {
-    class_name: class_id
-    for class_name, class_id in AIR_CLASS_IDS.items()
-    if class_name != "boi"
-}
+AIR_GENERAL_CLASS_IDS = dict(AIR_CLASS_IDS)
 AIR_GENERAL_CLASS_BY_ID = {
     class_id: class_name
     for class_name, class_id in AIR_GENERAL_CLASS_IDS.items()
 }
 AIR_CLASS_LABELS = {
     "boi": "Boi",
-    "humano": "Humano",
+    "humano": HOMO_SAPIENS_LABEL,
     "cachorro": "Cachorro",
     "gato": "Gato",
     "ave": "Ave",
@@ -424,16 +423,46 @@ AIR_SPECIES_COCO_IDS = {
     "cao": 16,
     "bovino": 19,
 }
+
+AIR_COUNT_TARGETS = {
+    "boi": {
+        "cache_key": "air_cattle",
+        "model_path": AIR_CATTLE_MODEL_PATH,
+        "class_id": 0,
+        "confidence": AIR_CATTLE_CONFIDENCE,
+        "iou": 0.50,
+        "display_plural": "bovinos",
+        "model_name": "BioVision Cattle",
+    },
+    "humano": {
+        "cache_key": "air_species",
+        "model_path": AIR_GENERAL_MODEL_PATH,
+        "class_id": AIR_CLASS_IDS["humano"],
+        "confidence": AIR_CLASS_MIN_CONFIDENCE["humano"],
+        "iou": 0.55,
+        "display_plural": "humanos",
+        "model_name": "YOLO11x para humanos",
+    },
+    "ave": {
+        "cache_key": "air_species",
+        "model_path": AIR_GENERAL_MODEL_PATH,
+        "class_id": AIR_CLASS_IDS["ave"],
+        "confidence": AIR_CLASS_MIN_CONFIDENCE["ave"],
+        "iou": 0.55,
+        "display_plural": "aves",
+        "model_name": "YOLO11x para aves",
+    },
+}
 AIR_SPECIES_BY_ID = {class_id: name for name, class_id in AIR_SPECIES_COCO_IDS.items()}
 AIR_SPECIES_LABELS = {
-    "pessoa": "Humano",
+    "pessoa": HOMO_SAPIENS_LABEL,
     "ave": "Ave",
     "gato": "Gato",
     "cao": "Cachorro",
     "bovino": "Bovino",
 }
 AIR_SPECIES_FALLBACK = {
-    "pessoa": "humano",
+    "pessoa": HOMO_SAPIENS_RAW_LABEL,
     "ave": "ave",
     "gato": "gato",
     "cao": "cachorro",
@@ -548,7 +577,7 @@ def area_caixa(box):
 
 
 def caixa_corresponde_a_bovino(candidate_box, cattle_boxes):
-    """Evita que o detector COCO renomeie um bovino como ave ou humano."""
+    """Verifica se a caixa candidata coincide com uma caixa bovina confirmada."""
     candidate_area = area_caixa(candidate_box)
     if candidate_area <= 0:
         return False
@@ -640,7 +669,127 @@ def consolidar_deteccoes_air(frame_counts, frame_confidences, frames_analisados)
     return consolidated, minimum_frames
 
 
-def processar_video_contagem(video_path, video_info=None, progress_callback=None):
+def processar_video_contagem(
+    video_path,
+    video_info=None,
+    progress_callback=None,
+    target_class="boi",
+):
+    target_class = str(target_class or "boi").strip().lower()
+    target_config = AIR_COUNT_TARGETS.get(target_class)
+    if target_config is None:
+        raise ValueError("Escolha Bovinos, Humanos ou Aves para a contagem.")
+
+    display_plural = target_config["display_plural"]
+    emitir_progresso(progress_callback, 8, f"Carregando detector de {display_plural}")
+    model, inference_lock = carregar_yolo(
+        target_config["cache_key"],
+        target_config["model_path"],
+    )
+    video_info = video_info or metadados_video(video_path)
+    runtime = configuracao_yolo(video_info)
+    expected_frames = max(1, math.ceil(video_info["total_frames"] / runtime["vid_stride"]))
+    frame_counts = {target_class: []}
+    frame_confidences = {target_class: []}
+    total_detections = 0
+    frames_analisados = 0
+
+    emitir_progresso(progress_callback, 12, f"Localizando {display_plural} nos quadros")
+    with inference_lock:
+        resultados = model.predict(
+            source=str(video_path),
+            classes=[int(target_config["class_id"])],
+            conf=float(target_config["confidence"]),
+            iou=float(target_config["iou"]),
+            imgsz=AIR_YOLO_IMGSZ,
+            stream=True,
+            save=False,
+            verbose=False,
+            rect=True,
+            max_det=300,
+            device=runtime["device"],
+            half=runtime["half"],
+            batch=runtime["batch"],
+            vid_stride=runtime["vid_stride"],
+        )
+
+        for resultado in resultados:
+            frames_analisados += 1
+            emitir_progresso(
+                progress_callback,
+                12 + int(78 * min(frames_analisados / expected_frames, 1.0)),
+                f"Detectando {display_plural}: {frames_analisados} de aproximadamente {expected_frames} quadros",
+            )
+            boxes = getattr(resultado, "boxes", None)
+            detections = []
+
+            if boxes is not None and boxes.cls is not None:
+                class_ids = boxes.cls.cpu().numpy().astype(int).tolist()
+                confidences = boxes.conf.cpu().numpy().tolist()
+                coordinates = boxes.xyxy.cpu().numpy().tolist()
+
+                for class_id, confidence, xyxy in zip(class_ids, confidences, coordinates):
+                    if target_class != "boi" and int(class_id) != int(target_config["class_id"]):
+                        continue
+
+                    confidence = float(confidence)
+                    if confidence < float(target_config["confidence"]):
+                        continue
+
+                    detections.append({
+                        "confidence": confidence,
+                        "xyxy": tuple(float(value) for value in xyxy),
+                    })
+
+            total_detections += len(detections)
+            frame_counts[target_class].append(contar_caixas_sem_duplicar(detections))
+            if detections:
+                frame_confidences[target_class].append(
+                    max(item["confidence"] for item in detections)
+                )
+
+    for counts in frame_counts.values():
+        if len(counts) < frames_analisados:
+            counts.extend([0] * (frames_analisados - len(counts)))
+
+    emitir_progresso(progress_callback, 92, "Confirmando deteccoes consistentes")
+    consolidated, minimum_frames = consolidar_deteccoes_air(
+        frame_counts,
+        frame_confidences,
+        frames_analisados,
+    )
+    contagens = {
+        class_name: int(details["count"])
+        for class_name, details in consolidated.items()
+    }
+    confidence_by_class = {
+        class_name: round(float(details["confidence"]) * 100.0, 2)
+        for class_name, details in consolidated.items()
+        if details["accepted"] and details["confidence"] is not None
+    }
+    confirmed_frames = {
+        class_name: int(details["support_frames"])
+        for class_name, details in consolidated.items()
+        if details["accepted"]
+    }
+
+    emitir_progresso(progress_callback, 94, "Organizando a contagem")
+    return {
+        "modelo": target_config["model_name"],
+        "alvo_contagem": target_class,
+        "contagens": contagens,
+        "total_estimado": sum(contagens.values()),
+        "total_deteccoes": total_detections,
+        "frames_analisados": frames_analisados,
+        "vid_stride": runtime["vid_stride"],
+        "maior_confianca": max(confidence_by_class.values(), default=None),
+        "confianca_por_classe": confidence_by_class,
+        "quadros_confirmados": confirmed_frames,
+        "quadros_minimos": minimum_frames,
+    }
+
+
+def processar_video_contagem_combinada(video_path, video_info=None, progress_callback=None):
     emitir_progresso(progress_callback, 8, "Carregando detector aéreo de bovinos")
     cattle_model, cattle_inference_lock = carregar_yolo(
         "air_cattle",
@@ -697,19 +846,12 @@ def processar_video_contagem(video_path, video_info=None, progress_callback=None
                     if confidence < AIR_CATTLE_CONFIDENCE:
                         continue
 
-                    total_detections += 1
                     cattle_boxes.append({
                         "confidence": confidence,
                         "xyxy": tuple(float(value) for value in xyxy),
                     })
 
-            count = contar_caixas_sem_duplicar(cattle_boxes)
-            frame_counts["boi"].append(count)
-            cattle_boxes_by_frame.append([item["xyxy"] for item in cattle_boxes])
-            if cattle_boxes:
-                frame_confidences["boi"].append(
-                    max(item["confidence"] for item in cattle_boxes)
-                )
+            cattle_boxes_by_frame.append(cattle_boxes)
 
     general_frames = 0
     emitir_progresso(progress_callback, 58, "Verificando pessoas, aves e outros animais")
@@ -739,12 +881,17 @@ def processar_video_contagem(video_path, video_info=None, progress_callback=None
                 f"Verificando outras classes: {general_frames} de aproximadamente {expected_frames} quadros",
             )
             boxes = getattr(resultado, "boxes", None)
-            frame_boxes = {name: [] for name in AIR_GENERAL_CLASS_IDS}
+            frame_boxes = {
+                name: []
+                for name in AIR_GENERAL_CLASS_IDS
+                if name != "boi"
+            }
             cattle_boxes = (
                 cattle_boxes_by_frame[frame_index]
                 if frame_index < len(cattle_boxes_by_frame)
                 else []
             )
+            general_cattle_boxes = []
 
             if boxes is not None and boxes.cls is not None:
                 class_ids = boxes.cls.cpu().numpy().astype(int).tolist()
@@ -758,16 +905,50 @@ def processar_video_contagem(video_path, video_info=None, progress_callback=None
 
                     confidence = float(confidence)
                     candidate_box = tuple(float(value) for value in xyxy)
-                    if confidence < confianca_minima_auxiliar_air(class_name, cattle_boxes):
-                        continue
-                    if caixa_corresponde_a_bovino(candidate_box, cattle_boxes):
+                    if class_name == "boi":
+                        if confidence >= AIR_GENERAL_CATTLE_CONFIRMATION_CONFIDENCE:
+                            general_cattle_boxes.append(candidate_box)
                         continue
 
-                    total_detections += 1
+                    if confidence < AIR_CLASS_MIN_CONFIDENCE[class_name]:
+                        continue
                     frame_boxes[class_name].append({
                         "confidence": confidence,
                         "xyxy": candidate_box,
                     })
+
+            cattle_boxes_confirmed = [
+                item
+                for item in cattle_boxes
+                if caixa_corresponde_a_bovino(item["xyxy"], general_cattle_boxes)
+            ]
+            confirmed_cattle_coordinates = [
+                item["xyxy"] for item in cattle_boxes_confirmed
+            ]
+            frame_counts["boi"].append(
+                contar_caixas_sem_duplicar(cattle_boxes_confirmed)
+            )
+            if cattle_boxes_confirmed:
+                frame_confidences["boi"].append(
+                    max(item["confidence"] for item in cattle_boxes_confirmed)
+                )
+            total_detections += len(cattle_boxes_confirmed)
+
+            for class_name, class_boxes in frame_boxes.items():
+                minimum_confidence = confianca_minima_auxiliar_air(
+                    class_name,
+                    confirmed_cattle_coordinates,
+                )
+                class_boxes[:] = [
+                    item
+                    for item in class_boxes
+                    if item["confidence"] >= minimum_confidence
+                    and not caixa_corresponde_a_bovino(
+                        item["xyxy"],
+                        confirmed_cattle_coordinates,
+                    )
+                ]
+                total_detections += len(class_boxes)
 
             for class_name, class_boxes in frame_boxes.items():
                 frame_counts[class_name].append(
@@ -954,8 +1135,8 @@ def processar_video_especies(video_path, work_dir, video_info=None, progress_cal
 
         if class_name == "pessoa":
             classificacao = {
-                "label": AIR_SPECIES_FALLBACK[class_name],
-                "raw_label": class_name,
+                "label": HOMO_SAPIENS_LABEL,
+                "raw_label": HOMO_SAPIENS_RAW_LABEL,
                 "confidence": round(float(candidate["confidence"]) * 100.0, 2),
                 "source": "yolo",
             }
@@ -975,7 +1156,11 @@ def processar_video_especies(video_path, work_dir, video_info=None, progress_cal
         label_identificado = classificacao["keyword"] if "keyword" in classificacao else classificacao["label"]
         raw_identificado = classificacao.get("raw_keyword") or classificacao.get("raw_label")
         dados_taxon = buscar_informacoes_especie(raw_identificado or label_identificado)
-        selector_label = primeiro_nome_popular_ou_cientifico(dados_taxon, label_identificado)
+        selector_label = (
+            HOMO_SAPIENS_LABEL
+            if raw_identificado == HOMO_SAPIENS_RAW_LABEL
+            else primeiro_nome_popular_ou_cientifico(dados_taxon, label_identificado)
+        )
 
         species_found.append({
             "label": label_identificado,
@@ -1392,9 +1577,15 @@ def identificar_audio_especie(source, progress_callback=None):
     )
 
 
-def montar_payload_contagem(video_path, video_info, progress_callback=None):
+def montar_payload_contagem(
+    video_path,
+    video_info,
+    progress_callback=None,
+    target_class="boi",
+):
     resultado = processar_video_contagem(
         video_path,
+        target_class=target_class,
         video_info=video_info,
         progress_callback=progress_callback,
     )

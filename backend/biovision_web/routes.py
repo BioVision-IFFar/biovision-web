@@ -84,6 +84,10 @@ def processar_contagem_animais():
             "erro": "Formato de video nao suportado. Use MP4, MOV, AVI, MKV, M4V ou WEBM."
         }), 400
 
+    target_class = str(request.form.get("target_class") or "boi").strip().lower()
+    if target_class not in model_service.AIR_COUNT_TARGETS:
+        return jsonify({"erro": "Escolha Bovinos, Humanos ou Aves para a contagem."}), 400
+
     if requisicao_assincrona():
         def task_factory(video_path, _work_dir):
             video_info = model_service.metadados_video(video_path)
@@ -96,6 +100,7 @@ def processar_contagem_animais():
                 video_path,
                 video_info,
                 progress,
+                target_class=target_class,
             )
 
         try:
@@ -123,7 +128,11 @@ def processar_contagem_animais():
                         f"o limite de {model_service.AIR_MAX_VIDEO_SECONDS} segundos."
                     )
                 }), 400
-            resultado = model_service.montar_payload_contagem(video_path, video_info)
+            resultado = model_service.montar_payload_contagem(
+                video_path,
+                video_info,
+                target_class=target_class,
+            )
         except ValueError as exc:
             return jsonify({"erro": str(exc)}), 400
         except (FileNotFoundError, RuntimeError) as exc:

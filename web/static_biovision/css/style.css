@@ -3041,6 +3041,15 @@ body.page-air .choice-select {
   min-width: 150px;
 }
 
+body.page-air .air-count-target-select {
+  min-width: 180px;
+}
+
+body.page-air .air-count-target-select .choice-menu {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
 body.page-air .air-result-inline {
   max-width: 860px;
 }
@@ -4003,8 +4012,8 @@ body.page-landing .nav-inner {
 
 .bv-home-hero {
   position: relative;
-  min-height: 650px;
-  height: calc(100svh - 71px);
+  min-height: max(650px, calc(100svh - 71px));
+  height: auto;
   max-height: 900px;
   display: grid;
   place-items: center;

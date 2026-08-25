@@ -1308,7 +1308,7 @@ function renderAirResult(data) {
 
   const labels = {
     boi: 'Boi',
-    humano: 'Humano',
+    humano: 'Homo sapiens',
     cachorro: 'Cachorro',
     gato: 'Gato',
     ave: 'Ave'
@@ -1517,6 +1517,11 @@ function initChoiceSelects() {
           setIdentifyMode(value, label);
         }
 
+        if (group === 'air-target') {
+          const hidden = document.getElementById('airTargetValue');
+          if (hidden) hidden.value = value;
+        }
+
       });
     });
   });
@@ -1588,6 +1593,10 @@ function initBioVisionAir() {
 
       const formData = new FormData();
       formData.append('video', airSelectedFile, airSelectedFile.name);
+      formData.append(
+        'target_class',
+        document.getElementById('airTargetValue')?.value || 'boi'
+      );
 
       try {
         resetAnalysisProgress('air');

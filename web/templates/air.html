@@ -114,6 +114,18 @@
             <input type="file" name="video" id="airVideo" accept="video/*" hidden>
             <div class="upload-action-row">
               <button type="submit" id="airSubmit" class="btn-identify upload-action-main" disabled>Processar vídeo</button>
+              <div class="choice-select air-count-target-select" data-choice-select data-choice-group="air-target">
+                <button type="button" class="choice-trigger" aria-label="Espécie para contagem" aria-haspopup="listbox" aria-expanded="false">
+                  <span id="airTargetLabel">Bovinos</span>
+                  <span class="choice-chevron">v</span>
+                </button>
+                <div class="choice-menu" role="listbox" aria-label="Espécie para contagem">
+                  <button type="button" class="choice-option is-selected" data-choice-value="boi" data-choice-label="Bovinos">Bovinos</button>
+                  <button type="button" class="choice-option" data-choice-value="humano" data-choice-label="Humanos">Humanos</button>
+                  <button type="button" class="choice-option" data-choice-value="ave" data-choice-label="Aves">Aves</button>
+                </div>
+              </div>
+              <input type="hidden" id="airTargetValue" name="target_class" value="boi">
             </div>
 
             <div class="air-video-preview" id="airVideoPreview" hidden>
