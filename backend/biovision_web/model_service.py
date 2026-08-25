@@ -386,6 +386,8 @@ AIR_ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".webm"}
 
 AIR_CATTLE_CONFIDENCE = 0.35
 AIR_GENERAL_CATTLE_CONFIRMATION_CONFIDENCE = 0.45
+AIR_TRACKER_CONFIG = "botsort.yaml"
+AIR_TRACK_MIN_HITS = 2
 HOMO_SAPIENS_RAW_LABEL = "Homo_sapiens"
 HOMO_SAPIENS_LABEL = nome_classe_legivel(HOMO_SAPIENS_RAW_LABEL)
 
@@ -669,6 +671,41 @@ def consolidar_deteccoes_air(frame_counts, frame_confidences, frames_analisados)
     return consolidated, minimum_frames
 
 
+def consolidar_rastros_air(track_observations, minimum_hits=AIR_TRACK_MIN_HITS):
+    """Confirma IDs vistos em mais de um quadro e calcula a contagem acumulada."""
+    confirmed_track_ids = set()
+    confirmed_frames = set()
+    confirmed_confidences = []
+
+    for track_id, observations in track_observations.items():
+        observations_by_frame = {}
+        for frame_index, confidence in observations:
+            frame_index = int(frame_index)
+            confidence = float(confidence)
+            observations_by_frame[frame_index] = max(
+                confidence,
+                observations_by_frame.get(frame_index, 0.0),
+            )
+
+        if len(observations_by_frame) < int(minimum_hits):
+            continue
+
+        confirmed_track_ids.add(int(track_id))
+        confirmed_frames.update(observations_by_frame)
+        confirmed_confidences.extend(observations_by_frame.values())
+
+    confidence = None
+    if confirmed_confidences:
+        confidence = float(np.percentile(confirmed_confidences, 75))
+
+    return {
+        "count": len(confirmed_track_ids),
+        "confidence": confidence,
+        "support_frames": len(confirmed_frames),
+        "track_ids": confirmed_track_ids,
+    }
+
+
 def processar_video_contagem(
     video_path,
     video_info=None,
@@ -689,89 +726,101 @@ def processar_video_contagem(
     video_info = video_info or metadados_video(video_path)
     runtime = configuracao_yolo(video_info)
     expected_frames = max(1, math.ceil(video_info["total_frames"] / runtime["vid_stride"]))
-    frame_counts = {target_class: []}
-    frame_confidences = {target_class: []}
+    track_observations = defaultdict(list)
     total_detections = 0
     frames_analisados = 0
 
-    emitir_progresso(progress_callback, 12, f"Localizando {display_plural} nos quadros")
+    emitir_progresso(progress_callback, 12, f"Rastreando {display_plural} nos quadros")
     with inference_lock:
-        resultados = model.predict(
-            source=str(video_path),
-            classes=[int(target_config["class_id"])],
-            conf=float(target_config["confidence"]),
-            iou=float(target_config["iou"]),
-            imgsz=AIR_YOLO_IMGSZ,
-            stream=True,
-            save=False,
-            verbose=False,
-            rect=True,
-            max_det=300,
-            device=runtime["device"],
-            half=runtime["half"],
-            batch=runtime["batch"],
-            vid_stride=runtime["vid_stride"],
-        )
-
-        for resultado in resultados:
-            frames_analisados += 1
-            emitir_progresso(
-                progress_callback,
-                12 + int(78 * min(frames_analisados / expected_frames, 1.0)),
-                f"Detectando {display_plural}: {frames_analisados} de aproximadamente {expected_frames} quadros",
+        original_callbacks = {
+            event: list(callbacks)
+            for event, callbacks in model.callbacks.items()
+        }
+        resultados = None
+        try:
+            resultados = model.track(
+                source=str(video_path),
+                classes=[int(target_config["class_id"])],
+                conf=float(target_config["confidence"]),
+                iou=float(target_config["iou"]),
+                imgsz=AIR_YOLO_IMGSZ,
+                stream=True,
+                persist=False,
+                tracker=AIR_TRACKER_CONFIG,
+                save=False,
+                verbose=False,
+                rect=True,
+                max_det=300,
+                device=runtime["device"],
+                half=runtime["half"],
+                vid_stride=runtime["vid_stride"],
             )
-            boxes = getattr(resultado, "boxes", None)
-            detections = []
 
-            if boxes is not None and boxes.cls is not None:
+            for resultado in resultados:
+                frames_analisados += 1
+                emitir_progresso(
+                    progress_callback,
+                    12 + int(78 * min(frames_analisados / expected_frames, 1.0)),
+                    f"Rastreando {display_plural}: {frames_analisados} de aproximadamente {expected_frames} quadros",
+                )
+                boxes = getattr(resultado, "boxes", None)
+                if boxes is None or boxes.cls is None or boxes.conf is None:
+                    continue
+
                 class_ids = boxes.cls.cpu().numpy().astype(int).tolist()
                 confidences = boxes.conf.cpu().numpy().tolist()
-                coordinates = boxes.xyxy.cpu().numpy().tolist()
+                track_ids_tensor = getattr(boxes, "id", None)
+                track_ids = (
+                    track_ids_tensor.cpu().numpy().astype(int).tolist()
+                    if track_ids_tensor is not None
+                    else [None] * len(class_ids)
+                )
+                frame_track_ids = set()
 
-                for class_id, confidence, xyxy in zip(class_ids, confidences, coordinates):
-                    if target_class != "boi" and int(class_id) != int(target_config["class_id"]):
+                for class_id, confidence, track_id in zip(
+                    class_ids,
+                    confidences,
+                    track_ids,
+                ):
+                    if int(class_id) != int(target_config["class_id"]):
                         continue
 
                     confidence = float(confidence)
                     if confidence < float(target_config["confidence"]):
                         continue
 
-                    detections.append({
-                        "confidence": confidence,
-                        "xyxy": tuple(float(value) for value in xyxy),
-                    })
+                    total_detections += 1
+                    if track_id is None or int(track_id) in frame_track_ids:
+                        continue
 
-            total_detections += len(detections)
-            frame_counts[target_class].append(contar_caixas_sem_duplicar(detections))
-            if detections:
-                frame_confidences[target_class].append(
-                    max(item["confidence"] for item in detections)
-                )
+                    track_id = int(track_id)
+                    frame_track_ids.add(track_id)
+                    track_observations[track_id].append(
+                        (frames_analisados, confidence)
+                    )
+        finally:
+            # O modo track registra callbacks no modelo compartilhado. Limpar o
+            # predictor impede que um job ou uma predicao comum herde IDs antigos.
+            if resultados is not None and hasattr(resultados, "close"):
+                resultados.close()
+            model.callbacks = original_callbacks
+            model.predictor = None
 
-    for counts in frame_counts.values():
-        if len(counts) < frames_analisados:
-            counts.extend([0] * (frames_analisados - len(counts)))
-
-    emitir_progresso(progress_callback, 92, "Confirmando deteccoes consistentes")
-    consolidated, minimum_frames = consolidar_deteccoes_air(
-        frame_counts,
-        frame_confidences,
-        frames_analisados,
+    emitir_progresso(progress_callback, 92, "Confirmando IDs rastreados")
+    consolidated = consolidar_rastros_air(track_observations)
+    count = int(consolidated["count"])
+    confidence = consolidated["confidence"]
+    contagens = {target_class: count}
+    confidence_by_class = (
+        {target_class: round(float(confidence) * 100.0, 2)}
+        if confidence is not None
+        else {}
     )
-    contagens = {
-        class_name: int(details["count"])
-        for class_name, details in consolidated.items()
-    }
-    confidence_by_class = {
-        class_name: round(float(details["confidence"]) * 100.0, 2)
-        for class_name, details in consolidated.items()
-        if details["accepted"] and details["confidence"] is not None
-    }
-    confirmed_frames = {
-        class_name: int(details["support_frames"])
-        for class_name, details in consolidated.items()
-        if details["accepted"]
-    }
+    confirmed_frames = (
+        {target_class: int(consolidated["support_frames"])}
+        if count > 0
+        else {}
+    )
 
     emitir_progresso(progress_callback, 94, "Organizando a contagem")
     return {
@@ -785,7 +834,8 @@ def processar_video_contagem(
         "maior_confianca": max(confidence_by_class.values(), default=None),
         "confianca_por_classe": confidence_by_class,
         "quadros_confirmados": confirmed_frames,
-        "quadros_minimos": minimum_frames,
+        "quadros_minimos": AIR_TRACK_MIN_HITS,
+        "metodo_contagem": "ids_unicos",
     }
 
 
