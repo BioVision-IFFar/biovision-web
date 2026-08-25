@@ -1377,7 +1377,7 @@ function renderAirResult(data) {
     <section class="air-result-overview">
       <div class="air-result-head">
         <p class="air-result-label">Análise concluída</p>
-        <h2><strong>${total}</strong><span>${total === 1 ? 'animal confirmado' : 'animais confirmados'}</span></h2>
+        <h2><strong>${total}</strong><span>${total === 1 ? 'espécie confirmada' : 'espécies confirmadas'}</span></h2>
         <p>A contagem considera somente ocorrências recorrentes ao longo do vídeo.</p>
       </div>
       <dl class="air-result-metrics">
