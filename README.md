@@ -1,8 +1,16 @@
 # BioVision Web
 
-![BioVision Web](docs/photo/inicial_web.png)
+<p align="center">
+  <img src="docs/photo/inicial_web.png" alt="Tela inicial do BioVision Web" width="100%" />
+</p>
 
-Aplicação Flask para identificação de fauna em imagens, vídeos e áudios, além do processamento de vídeos aéreos no BioVision Air.
+<p align="center">
+  <strong>Aplicação para identificação de fauna em imagens, vídeos e áudios, além do processamento de vídeos aéreos no BioVision Air.</strong>
+</p>
+
+## Visão geral
+
+O BioVision é uma plataforma Flask para apoiar a identificação de espécies da fauna por meio de imagens, vídeos e áudios, com suporte adicional para análise de vídeos aéreos no módulo BioVision Air.
 
 ## Estrutura
 
@@ -33,3 +41,4 @@ Para produção com uso reduzido de disco, o `requirements.txt` usa as distribui
 ```bash
 docker build -t biovision-iffar .
 docker run --env-file .env -p 5001:5001 biovision-iffar
+```
