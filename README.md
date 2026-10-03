@@ -1,4 +1,4 @@
-# BioVision IFFar
+# BioVision
 
 Aplicação Flask para identificação de fauna em imagens, vídeos e áudios, além do processamento de vídeos aéreos no BioVision Air.
 
@@ -20,25 +20,14 @@ Aplicação Flask para identificação de fauna em imagens, vídeos e áudios, a
 4. Execute `python app.py`.
 5. Acesse `http://127.0.0.1:5001/biovision/`.
 
-As imagens biológicas são carregadas diretamente pelo navegador a partir de `BIOVISION_IMAGE_BASE_URL`. O MySQL armazena apenas os caminhos relativos dos arquivos.
+As imagens biológicas são carregadas diretamente pelo navegador a partir de `BIOVISION_IMAGE_BASE_URL` (claudflare). O MySQL armazena apenas os caminhos relativos dos arquivos.
 
-## Gunicorn
+## Produção
 
-Em Linux, execute o servidor de produção com:
+Atualmente, o BioVision está rodando em produção na nossa instituição federal de pesquisa.
 
-```bash
-gunicorn --config gunicorn.conf.py backend.wsgi:app
-```
-
-O Gunicorn usa um único processo com múltiplas threads porque a fila de análises fica em memória. Os modelos são carregados uma vez nesse processo antes de ele começar a atender requisições.
-
-## Produção com uso reduzido de disco
-
-O `requirements.txt` usa as distribuições oficiais CPU-only do PyTorch. Para evitar cache do `pip` e a cópia adicional dos modelos mantida pelo Git LFS, gere a imagem de produção com o `Dockerfile`:
+Para produção com uso reduzido de disco, o `requirements.txt` usa as distribuições oficiais CPU-only do PyTorch. Para evitar cache do `pip` e a cópia adicional dos modelos mantida pelo Git LFS, gere a imagem de produção com o `Dockerfile`:
 
 ```bash
 docker build -t biovision-iffar .
 docker run --env-file .env -p 5001:5001 biovision-iffar
-```
-
-O `.dockerignore` não envia `.git`, banco de desenvolvimento, documentação, treinamento ou arquivos temporários para a imagem. Os modelos necessários continuam incluídos uma única vez.
