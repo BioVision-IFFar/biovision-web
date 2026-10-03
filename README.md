@@ -1,11 +1,9 @@
-# BioVision Web
-
 <p align="center">
   <img src="docs/photo/inicial_web.png" alt="Tela inicial do BioVision Web" width="100%" />
 </p>
 
 <p align="center">
-  <strong>Aplicação para identificação de fauna em imagens, vídeos e áudios, além do processamento de vídeos aéreos no BioVision Air.</strong>
+  <strong>BioVision Web.</strong>
 </p>
 
 ## Visão geral
