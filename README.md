@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>BioVision Web.</strong>
+  <strong>BioVision Web</strong>
 </p>
 
 ## Visão geral
