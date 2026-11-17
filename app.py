@@ -5,6 +5,7 @@ from backend.biovision_web.config import (
     ANALYSIS_WORKERS,
     APP_HOST,
     APP_PORT,
+    MAX_CONTENT_LENGTH,
     WAITRESS_THREADS,
 )
 
@@ -38,7 +39,11 @@ def main():
             host=APP_HOST,
             port=APP_PORT,
             threads=WAITRESS_THREADS,
-            channel_timeout=300,
+            channel_timeout=60,
+            connection_limit=100,
+            max_request_body_size=MAX_CONTENT_LENGTH,
+            expose_tracebacks=False,
+            clear_untrusted_proxy_headers=True,
         )
 
 

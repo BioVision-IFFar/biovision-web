@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Outfit:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='1802') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='1805') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
   <link rel="preload" as="image" href="{{ url_for('static', filename='icons/biovision_air_background_desktop_v2.png') }}" media="(min-width: 821px), (min-width: 761px) and (orientation: landscape)" fetchpriority="high">
   <link rel="preload" as="image" href="{{ url_for('static', filename='icons/biovision_air_background_mobile_v2.png') }}" media="(max-width: 760px), (max-width: 820px) and (orientation: portrait)" fetchpriority="high">
@@ -44,55 +44,13 @@
         </div>
       </div>
 
-      <div class="air-showcase-features" role="list" aria-label="Recursos do BioVision Air">
-        <article class="air-showcase-feature" role="listitem">
-          <span class="air-feature-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="7"></circle>
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path>
-            </svg>
-          </span>
-          <span>
-            <strong>Identificação</strong>
-            <small>Reconhecimento automático de animais.</small>
-          </span>
-        </article>
-
-        <article class="air-showcase-feature" role="listitem">
-          <span class="air-feature-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="8" cy="8" r="3"></circle>
-              <circle cx="17" cy="9" r="2.5"></circle>
-              <path d="M3 20v-2a5 5 0 0 1 10 0v2M14 20v-1.5a4 4 0 0 1 7-2.7V20"></path>
-            </svg>
-          </span>
-          <span>
-            <strong>Contagem</strong>
-            <small>Totais organizados por classe.</small>
-          </span>
-        </article>
-
-        <article class="air-showcase-feature" role="listitem">
-          <span class="air-feature-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="9"></circle>
-              <path d="M12 7v5l3 2"></path>
-            </svg>
-          </span>
-          <span>
-            <strong>Análise ágil</strong>
-            <small>Vídeos de até 30 segundos.</small>
-          </span>
-        </article>
-      </div>
     </section>
 
     <section class="air-process-section" id="airProcessamento">
       <header class="air-process-heading">
         <span>BioVision Air</span>
-        <h1 id="airPanelTitle">Envie o vídeo do drone</h1>
-        <p>Identificação e contagem em gravações de até 30 segundos.</p>
+        <h1 id="airPanelTitle">Envie o vídeo e faça a contagem</h1>
+        <p>Selecione o animal e conte os espécimes em vídeos de até 30 segundos.</p>
       </header>
 
       <section class="air-simple-card" aria-labelledby="airPanelTitle">
@@ -161,7 +119,8 @@
     <div id="airResultado" class="air-result-panel air-result-inline" aria-live="polite" hidden></div>
   </main>
 
-  <script src="{{ url_for('static', filename='js/app.js', v='2008') }}"></script>
+  <script>window.BIOVISION_LIMITS = {{ media_limits|tojson }};</script>
+  <script src="{{ url_for('static', filename='js/app.js', v='2009') }}"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/biovision/service-worker.js").catch(() => {});

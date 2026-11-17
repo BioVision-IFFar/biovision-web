@@ -2,15 +2,16 @@ import atexit
 import copy
 import io
 import json
+import logging
 import math
 import os
 import shutil
-import subprocess
 import threading
 import time
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -27,14 +28,22 @@ from .config import (
     BIRDNET_MODEL_PATH,
     CLASS_INDEX_PATH,
     JOB_TTL_SECONDS,
-    MAX_ACTIVE_JOBS,
+    JOB_TIMEOUT_SECONDS,
+    MAX_QUEUED_JOBS,
+    MAX_RETAINED_JOBS,
+    MAX_VISITOR_JOBS,
+    QUEUE_TIMEOUT_SECONDS,
+    AUDIO_MAX_SECONDS,
     SPECIES_MODEL_PATH,
     SPECIES_YOLO_IMGSZ,
     YOLO_CPU_TARGET_FPS,
     YOLO_GPU_TARGET_FPS,
 )
+from .media_security import (
+    AV_OPTIONS, InvalidMedia, audio_sample_limit, check_dimensions, decode_deadline,
+    open_media, validate_av,
+)
 from .db import (
-    buscar_informacoes_classes_air,
     buscar_informacoes_especie,
     nome_classe_legivel,
     primeiro_nome_popular_ou_cientifico,
@@ -71,6 +80,13 @@ birdnet_inference_lock = threading.Lock()
 
 analysis_jobs = {}
 analysis_jobs_lock = threading.Lock()
+analysis_context = threading.local()
+logger = logging.getLogger(__name__)
+# Leitores usados pelo Ultralytics/OpenCV também ficam restritos a arquivos e
+# contêineres conhecidos. Não permitir playlists ou referências externas MOV.
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "|".join(
+    f"{key};{value}" for key, value in AV_OPTIONS.items()
+)
 analysis_executor = ThreadPoolExecutor(
     max_workers=ANALYSIS_WORKERS,
     thread_name_prefix="biovision-analysis",
@@ -78,9 +94,50 @@ analysis_executor = ThreadPoolExecutor(
 
 
 def emitir_progresso(callback, progress, stage):
+    verificar_prazo()
     if callback is None:
         return
     callback(max(0, min(99, int(progress))), str(stage))
+
+
+class AnalysisTimeout(TimeoutError):
+    pass
+
+
+def verificar_prazo():
+    if time.monotonic() > getattr(analysis_context, "deadline", float("inf")):
+        raise AnalysisTimeout("A análise excedeu o tempo permitido. Tente uma mídia menor.")
+
+
+@contextmanager
+def inferencia_limitada(lock):
+    verificar_prazo()
+    remaining = max(0.0, getattr(analysis_context, "deadline", time.monotonic() + JOB_TIMEOUT_SECONDS) - time.monotonic())
+    if not lock.acquire(timeout=remaining):
+        raise AnalysisTimeout("A análise excedeu o tempo permitido. Tente uma mídia menor.")
+    try:
+        verificar_prazo()
+        yield
+        verificar_prazo()
+    finally:
+        lock.release()
+
+
+def resultados_limitados(results, video_info, stride=1, max_seconds=60):
+    # Metadados podem mentir: limitar também os quadros realmente processados.
+    max_frames = math.ceil(max_seconds * float(video_info["fps"]) / max(1, stride)) + 1
+    try:
+        for index, result in enumerate(results):
+            verificar_prazo()
+            if index >= max_frames:
+                raise InvalidMedia("O vídeo ultrapassa o limite de quadros permitido.")
+            image = getattr(result, "orig_img", None)
+            if image is not None:
+                check_dimensions(image.shape[1], image.shape[0], video=True)
+            yield result
+    finally:
+        if hasattr(results, "close"):
+            results.close()
 
 
 def limpar_jobs_expirados():
@@ -94,6 +151,12 @@ def limpar_jobs_expirados():
         ]
         for job_id in expired:
             analysis_jobs.pop(job_id, None)
+        terminal = sorted(
+            (job for job in analysis_jobs.values() if job["status"] in {"completed", "failed"}),
+            key=lambda job: job["updated_at"],
+        )
+        for job in terminal[:max(0, len(analysis_jobs) - MAX_RETAINED_JOBS)]:
+            analysis_jobs.pop(job["id"], None)
 
 
 def atualizar_job(job_id, *, status=None, progress=None, stage=None, result=None, error=None):
@@ -117,13 +180,18 @@ def atualizar_job(job_id, *, status=None, progress=None, stage=None, result=None
 
 
 def executar_job(job_id, work_dir, task):
-    atualizar_job(job_id, status="running", progress=5, stage="Preparando analise")
-
     def progress_callback(progress, stage):
         atualizar_job(job_id, progress=progress, stage=stage)
 
     try:
+        with analysis_jobs_lock:
+            job = analysis_jobs[job_id]
+            if time.monotonic() - job["received_monotonic"] > QUEUE_TIMEOUT_SECONDS:
+                raise AnalysisTimeout("O tempo de espera na fila expirou. Envie o arquivo novamente.")
+        analysis_context.deadline = time.monotonic() + JOB_TIMEOUT_SECONDS
+        atualizar_job(job_id, status="running", progress=5, stage="Preparando analise")
         result = task(progress_callback)
+        verificar_prazo()
         atualizar_job(
             job_id,
             status="completed",
@@ -132,33 +200,48 @@ def executar_job(job_id, work_dir, task):
             result=result,
         )
     except Exception as exc:
+        logger.exception("Falha na análise %s", job_id)
         atualizar_job(
             job_id,
             status="failed",
             progress=100,
             stage="Nao foi possivel concluir",
-            error=str(exc),
+            error=(str(exc) if isinstance(exc, (InvalidMedia, AnalysisTimeout))
+                   else "Não foi possível processar esta mídia. Tente outro arquivo."),
         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+        analysis_context.__dict__.clear()
 
 
-def criar_job(kind, work_dir, task):
+class JobLimitError(RuntimeError):
+    def __init__(self, message, status=503):
+        super().__init__(message)
+        self.status = status
+
+
+def reservar_job(kind, owner):
+    """Reservar capacidade antes de ler/salvar o corpo do upload."""
     limpar_jobs_expirados()
     now = time.time()
     with analysis_jobs_lock:
         active = sum(
             1 for job in analysis_jobs.values()
-            if job["status"] in {"queued", "running"}
+            if job["status"] in {"receiving", "queued", "running"}
         )
-        if active >= MAX_ACTIVE_JOBS:
-            raise RuntimeError("O servidor esta com muitas analises na fila. Tente novamente em alguns instantes.")
+        if active >= ANALYSIS_WORKERS + MAX_QUEUED_JOBS:
+            raise JobLimitError("A fila está cheia. Aguarde um pouco e tente novamente.")
+        visitor_active = sum(1 for job in analysis_jobs.values()
+                             if job["status"] in {"receiving", "queued", "running"} and job["owner"] == owner)
+        if visitor_active >= MAX_VISITOR_JOBS:
+            raise JobLimitError("Aguarde suas análises atuais terminarem antes de enviar outra mídia.", 429)
 
         job_id = uuid.uuid4().hex
         analysis_jobs[job_id] = {
             "id": job_id,
             "kind": kind,
-            "status": "queued",
+            "owner": owner,
+            "status": "receiving",
             "progress": 2,
             "stage": "Aguardando processamento",
             "created_at": now,
@@ -166,17 +249,30 @@ def criar_job(kind, work_dir, task):
             "updated_at": now,
             "result": None,
             "error": None,
+            "received_monotonic": time.monotonic(),
         }
-
-    analysis_executor.submit(executar_job, job_id, str(work_dir), task)
     return job_id
 
 
-def payload_job(job_id):
+def descartar_reserva(job_id):
+    with analysis_jobs_lock:
+        analysis_jobs.pop(job_id, None)
+
+
+def enfileirar_job(job_id, work_dir, task):
+    atualizar_job(job_id, status="queued")
+    try:
+        analysis_executor.submit(executar_job, job_id, str(work_dir), task)
+    except Exception:
+        descartar_reserva(job_id)
+        raise
+
+
+def payload_job(job_id, owner):
     limpar_jobs_expirados()
     with analysis_jobs_lock:
         job = analysis_jobs.get(job_id)
-        if job is None:
+        if job is None or job["owner"] != owner:
             return None
         now = time.time()
         payload = {
@@ -352,7 +448,7 @@ def prever_especie_por_imagem(source, top_k=5):
     modelo, device = obter_modelo_especies()
     tensor = preparar_tensor_especies(source).to(device, non_blocking=device.type == "cuda")
 
-    with species_inference_lock, torch.inference_mode():
+    with inferencia_limitada(species_inference_lock), torch.inference_mode():
         if device.type == "cuda":
             with torch.autocast(device_type="cuda", dtype=torch.float16):
                 logits = modelo(tensor)
@@ -517,32 +613,8 @@ def configuracao_yolo(video_info):
 
 
 def metadados_video(video_path):
-    try:
-        import cv2
-    except ImportError as exc:
-        raise RuntimeError("Instale opencv-python-headless para validar a duracao do video.") from exc
-
-    captura = cv2.VideoCapture(str(video_path))
-    try:
-        if not captura.isOpened():
-            raise ValueError("Nao foi possivel ler o video enviado.")
-
-        fps = float(captura.get(cv2.CAP_PROP_FPS) or 0)
-        total_frames = int(captura.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        width = int(captura.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        height = int(captura.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        if fps <= 0 or total_frames <= 0:
-            raise ValueError("Nao foi possivel identificar a duracao do video.")
-
-        return {
-            "fps": fps,
-            "total_frames": total_frames,
-            "duration": total_frames / fps,
-            "width": width,
-            "height": height,
-        }
-    finally:
-        captura.release()
+    _path, info = validate_av(video_path, kind="video", max_seconds=IDENTIFY_VIDEO_MAX_SECONDS)
+    return info
 
 
 def duracao_video(video_path):
@@ -731,7 +803,7 @@ def processar_video_contagem(
     frames_analisados = 0
 
     emitir_progresso(progress_callback, 12, f"Rastreando {display_plural} nos quadros")
-    with inference_lock:
+    with inferencia_limitada(inference_lock):
         original_callbacks = {
             event: list(callbacks)
             for event, callbacks in model.callbacks.items()
@@ -756,7 +828,7 @@ def processar_video_contagem(
                 vid_stride=runtime["vid_stride"],
             )
 
-            for resultado in resultados:
+            for resultado in resultados_limitados(resultados, video_info, runtime["vid_stride"], AIR_MAX_VIDEO_SECONDS):
                 frames_analisados += 1
                 emitir_progresso(
                     progress_callback,
@@ -1108,7 +1180,7 @@ def processar_video_especies(video_path, work_dir, video_info=None, progress_cal
     frames_analyzed = 0
 
     emitir_progresso(progress_callback, 12, "Localizando animais no video")
-    with model_inference_lock:
+    with inferencia_limitada(model_inference_lock):
         resultados = model.predict(
             source=str(video_path),
             classes=list(AIR_SPECIES_COCO_IDS.values()),
@@ -1125,7 +1197,9 @@ def processar_video_especies(video_path, work_dir, video_info=None, progress_cal
             vid_stride=runtime["vid_stride"],
         )
 
-        for frame_index, resultado in enumerate(resultados):
+        for frame_index, resultado in enumerate(resultados_limitados(
+            resultados, video_info, runtime["vid_stride"], IDENTIFY_VIDEO_MAX_SECONDS,
+        )):
             frames_analyzed += 1
             emitir_progresso(
                 progress_callback,
@@ -1195,12 +1269,14 @@ def processar_video_especies(video_path, work_dir, video_info=None, progress_cal
                 classificacao = prever_especie_por_imagem(candidate["crop_path"], top_k=1)
                 classificacao["source"] = "biovision_pytorch"
             except Exception as exc:
+                if isinstance(exc, TimeoutError):
+                    raise
+                logger.exception("Falha na identificação de um recorte de vídeo")
                 classificacao = {
                     "label": AIR_SPECIES_FALLBACK.get(class_name, class_name),
                     "raw_label": class_name,
                     "confidence": round(float(candidate["confidence"]) * 100.0, 2),
                     "source": "yolo",
-                    "note": str(exc),
                 }
 
         label_identificado = classificacao["keyword"] if "keyword" in classificacao else classificacao["label"]
@@ -1279,10 +1355,6 @@ def audio_permitido(filename):
     return Path(filename).suffix.lower() in SOUND_ALLOWED_EXTENSIONS
 
 
-def ffmpeg_path():
-    return shutil.which("ffmpeg")
-
-
 def carregar_audio_com_pyav(source, sample_rate=48000):
     try:
         import av
@@ -1292,9 +1364,12 @@ def carregar_audio_com_pyav(source, sample_rate=48000):
             "instale a dependencia av do requirements.txt."
         ) from exc
 
-    source = Path(source).resolve()
+    source, _info = validate_av(source, kind="audio", max_seconds=AUDIO_MAX_SECONDS)
     chunks = []
-    container = av.open(str(source))
+    collected_samples = 0
+    sample_limit = audio_sample_limit(sample_rate)
+    deadline = decode_deadline()
+    container = open_media(source)
     try:
         audio_stream = next((stream for stream in container.streams if stream.type == "audio"), None)
         if audio_stream is None:
@@ -1307,6 +1382,10 @@ def carregar_audio_com_pyav(source, sample_rate=48000):
         )
 
         def collect(frame):
+            nonlocal collected_samples
+            collected_samples += frame.samples
+            if collected_samples > sample_limit:
+                raise InvalidMedia(f"O áudio ultrapassa o limite de {AUDIO_MAX_SECONDS} segundos.")
             array = frame.to_ndarray()
             chunks.append(array.reshape(-1).astype(np.float32) / 32768.0)
 
@@ -1318,7 +1397,12 @@ def carregar_audio_com_pyav(source, sample_rate=48000):
             return [value]
 
         for packet in container.demux(audio_stream):
+            verificar_prazo()
+            if time.monotonic() > deadline:
+                raise AnalysisTimeout("A leitura do áudio excedeu o tempo permitido.")
             for frame in packet.decode():
+                if frame.samples > max(1, frame.sample_rate) * AUDIO_MAX_SECONDS:
+                    raise InvalidMedia("Segmento de áudio acima do permitido.")
                 for resampled in iter_resampled(resampler.resample(frame)):
                     collect(resampled)
 
@@ -1333,44 +1417,6 @@ def carregar_audio_com_pyav(source, sample_rate=48000):
         samples = np.zeros(0, dtype=np.float32)
     duration = float(len(samples)) / float(sample_rate) if sample_rate else 0.0
     return samples, sample_rate, duration
-
-
-def preparar_audio_birdnet(source):
-    import wave
-
-    source = Path(source).resolve()
-    output = source.parent / f"{source.stem}_birdnet.wav"
-    ffmpeg = ffmpeg_path()
-    if ffmpeg is not None:
-        command = [
-            ffmpeg,
-            "-y",
-            "-v",
-            "error",
-            "-i",
-            str(source),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "48000",
-            "-f",
-            "wav",
-            str(output),
-        ]
-        subprocess.run(command, check=True)
-        with wave.open(str(output), "rb") as wav_file:
-            duration = wav_file.getnframes() / max(float(wav_file.getframerate()), 1.0)
-        return output, duration
-
-    samples, sample_rate, duration = carregar_audio_com_pyav(source, sample_rate=48000)
-    pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16)
-    with wave.open(str(output), "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(sample_rate)
-        wav_file.writeframes(pcm.tobytes())
-    return output, duration
 
 
 def obter_modelo_birdnet():
@@ -1483,22 +1529,19 @@ def obter_modelo_birdnet():
 
 def identificar_audio_birdnet(source, progress_callback=None):
     emitir_progresso(progress_callback, 12, "Preparando o áudio")
-    prepared_audio, duration = preparar_audio_birdnet(source)
+    samples, sample_rate, duration = carregar_audio_com_pyav(
+        source, sample_rate=BIRDNET_SAMPLE_RATE,
+    )
     emitir_progresso(progress_callback, 24, "Classificador acústico pronto")
     model = obter_modelo_birdnet()
-    samples, sample_rate, decoded_duration = carregar_audio_com_pyav(
-        prepared_audio,
-        sample_rate=BIRDNET_SAMPLE_RATE,
-    )
     if sample_rate != BIRDNET_SAMPLE_RATE:
         raise RuntimeError(
             f"Taxa de amostragem acústica inválida: {sample_rate} Hz."
         )
-    duration = decoded_duration or duration
 
     emitir_progresso(progress_callback, 38, "Comparando vocalizações em segmentos de áudio")
     grouped = defaultdict(list)
-    with birdnet_inference_lock:
+    with inferencia_limitada(birdnet_inference_lock):
         interpreter = model["interpreter"]
         segment_samples = int(model["segment_samples"])
         batch_size = int(model["batch_size"])
@@ -1646,8 +1689,6 @@ def montar_payload_contagem(
         if int(count) > 0
     ]
 
-    emitir_progresso(progress_callback, 96, "Consultando informacoes dos animais")
-    taxon_details, database_available = buscar_informacoes_classes_air(detected_classes)
     resultado["identificados"] = [
         {
             "classe": class_name,
@@ -1655,11 +1696,9 @@ def montar_payload_contagem(
             "quantidade": int(resultado["contagens"][class_name]),
             "confianca": resultado["confianca_por_classe"].get(class_name),
             "quadros_confirmados": resultado["quadros_confirmados"].get(class_name, 0),
-            "dados_taxon": taxon_details.get(class_name),
         }
         for class_name in detected_classes
     ]
-    resultado["banco_disponivel"] = database_available
     resultado["duracao"] = round(duracao, 2)
     emitir_progresso(progress_callback, 98, "Montando resultado")
     return resultado

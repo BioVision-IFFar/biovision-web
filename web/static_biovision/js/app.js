@@ -7,6 +7,10 @@ let videoStream;
 let lastSelectedFile = null;
 let airSelectedFile = null;
 let identifyMode = 'photo';
+const mediaLimits = window.BIOVISION_LIMITS || {
+  imageBytes: 10 * 1024 * 1024, videoBytes: 40 * 1024 * 1024,
+  audioBytes: 15 * 1024 * 1024, audioSeconds: 60
+};
 
 document.documentElement.dataset.theme = 'dark';
 try { localStorage.removeItem('theme'); } catch (e) {}
@@ -199,6 +203,12 @@ async function runAnalysisJob(endpoint, formData, onProgress) {
     }
 
     const state = await response.json().catch(() => null);
+    if (response.status === 429 || response.status === 503) {
+      onProgress?.({ stage: state?.erro || 'Aguardando o servidor', status: 'queued' });
+      const retry = Math.max(1, Math.min(60, Number(response.headers.get('Retry-After')) || 5));
+      await wait(retry * 1000);
+      continue;
+    }
     if (!response.ok || !state) {
       throw new Error(state?.erro || 'O servidor retornou uma resposta inválida.');
     }
@@ -356,6 +366,14 @@ function mostrarImagem(input) {
   const file = input.files[0];
   if (!file) return;
 
+  const maxBytes = identifyMode === 'photo' ? mediaLimits.imageBytes
+    : identifyMode === 'video' ? mediaLimits.videoBytes : mediaLimits.audioBytes;
+  if (file.size > maxBytes) {
+    alert(`O arquivo ultrapassa o limite de ${formatFileSize(maxBytes)}.`);
+    input.value = '';
+    return;
+  }
+
   lastSelectedFile = file;
 
   if (identifyMode !== 'photo') {
@@ -471,7 +489,7 @@ function hasContent(val) {
 function hasImage(val) {
   if (!val || typeof val !== 'string') return false;
   const trimmed = val.trim();
-  return /^https?:\/\//i.test(trimmed);
+  return /^https?:\/\//i.test(trimmed) || /^\/static_biovision\/[a-z0-9_./-]+$/i.test(trimmed);
 }
 
 function imgSrc(imageUrl) {
@@ -511,8 +529,8 @@ function exibirResultado(dados) {
       </div>
       <div class="result-header-info">
         <p class="result-header-label">Espécie identificada</p>
-        <h2 class="result-header-name"><i>${nomeCientifico}</i></h2>
-        ${nomesPopulares ? `<p class="result-header-popular">${nomesPopulares}</p>` : ''}
+        <h2 class="result-header-name"><i>${escapeHtml(nomeCientifico)}</i></h2>
+        ${nomesPopulares ? `<p class="result-header-popular">${escapeHtml(nomesPopulares)}</p>` : ''}
         <div class="result-header-confidence">
           <span class="conf-dot"></span>
           ${Number(dados.confidence).toFixed(1)}% de confiança
@@ -529,7 +547,7 @@ function exibirResultado(dados) {
   const taxoItems = [];
   ordemTaxonomia.forEach(chave => {
     if (hasContent(especie[chave])) {
-      let valor = especie[chave];
+      let valor = escapeHtml(especie[chave]);
       if (chave === "especie") valor = `<i>${valor}</i>`;
       taxoItems.push(`<div class="taxo-row"><span class="taxo-label">${colLabels[chave]}</span><span class="taxo-value">${valor}</span></div>`);
     }
@@ -544,14 +562,14 @@ function exibirResultado(dados) {
 
   // Aba 2: Habitat
   const habitatParts = [];
-  if (hasContent(especie.habitat)) habitatParts.push(`<p>${especie.habitat}</p>`);
+  if (hasContent(especie.habitat)) habitatParts.push(`<p>${escapeHtml(especie.habitat)}</p>`);
   if (habitatParts.length) {
     tabs.push({ id: 'habitat', label: 'Habitat', content: habitatParts.join('') });
   }
 
   // Aba 3: Morfologia
   const morfoParts = [];
-  if (hasContent(especie.morfologia)) morfoParts.push(`<p>${especie.morfologia}</p>`);
+  if (hasContent(especie.morfologia)) morfoParts.push(`<p>${escapeHtml(especie.morfologia)}</p>`);
   if (hasImage(especie.im_morfologia)) {
     const title = hasContent(especie.title_im_morfologia) ? especie.title_im_morfologia : 'Morfologia';
     morfoParts.push(`<img src="${imgSrc(especie.im_morfologia)}" class="tab-img" alt="${escapeHtml(title)}" title="${escapeHtml(title)}"/>`);
@@ -562,12 +580,12 @@ function exibirResultado(dados) {
 
   // Aba 4: Reprodução
   if (hasContent(especie.reproducao)) {
-    tabs.push({ id: 'reproducao', label: 'Reprodução', content: `<p>${especie.reproducao}</p>` });
+    tabs.push({ id: 'reproducao', label: 'Reprodução', content: `<p>${escapeHtml(especie.reproducao)}</p>` });
   }
 
   // Aba 5: Conservação
   const consParts = [];
-  if (hasContent(especie.conservacao)) consParts.push(`<p>${especie.conservacao}</p>`);
+  if (hasContent(especie.conservacao)) consParts.push(`<p>${escapeHtml(especie.conservacao)}</p>`);
   if (hasImage(especie.im_conservacao)) consParts.push(`<img src="${imgSrc(especie.im_conservacao)}" class="tab-img" alt="Conservação"/>`);
   if (consParts.length) {
     tabs.push({ id: 'conservacao', label: 'Conservação', content: consParts.join('') });
@@ -583,7 +601,7 @@ function exibirResultado(dados) {
   ];
   caracMap.forEach(c => {
     if (hasContent(especie[c.chave])) {
-      caracParts.push(`<h4 class="tab-subhead">${c.label}</h4><p>${especie[c.chave]}</p>`);
+      caracParts.push(`<h4 class="tab-subhead">${c.label}</h4><p>${escapeHtml(especie[c.chave])}</p>`);
       if (hasImage(especie[c.img])) {
         caracParts.push(`<img src="${imgSrc(especie[c.img])}" class="tab-img" alt="${c.label}"/>`);
       }
@@ -691,8 +709,8 @@ function renderTaxonDetailHtml(dados) {
       </div>
       <div class="result-header-info">
         <p class="result-header-label">Ficha completa</p>
-        <h2 class="result-header-name"><i>${nomeCientifico}</i></h2>
-        ${nomesPopulares ? `<p class="result-header-popular">${nomesPopulares}</p>` : ''}
+        <h2 class="result-header-name"><i>${escapeHtml(nomeCientifico)}</i></h2>
+        ${nomesPopulares ? `<p class="result-header-popular">${escapeHtml(nomesPopulares)}</p>` : ''}
         <div class="result-header-confidence">
           <span class="conf-dot"></span>
           ${confidence.toFixed(1)}% de confiança
@@ -706,7 +724,7 @@ function renderTaxonDetailHtml(dados) {
   const taxoItems = [];
   ordemTaxonomia.forEach(chave => {
     if (hasContent(especie[chave])) {
-      let valor = especie[chave];
+      let valor = escapeHtml(especie[chave]);
       if (chave === "especie") valor = `<i>${valor}</i>`;
       taxoItems.push(`<div class="taxo-row"><span class="taxo-label">${colLabels[chave]}</span><span class="taxo-value">${valor}</span></div>`);
     }
@@ -714,21 +732,21 @@ function renderTaxonDetailHtml(dados) {
   if (taxoItems.length) tabs.push({ id: 'taxonomia', label: 'Taxonomia', content: `<div class="taxo-grid">${taxoItems.join('')}</div>` });
 
   const habitatParts = [];
-  if (hasContent(especie.habitat)) habitatParts.push(`<p>${especie.habitat}</p>`);
+  if (hasContent(especie.habitat)) habitatParts.push(`<p>${escapeHtml(especie.habitat)}</p>`);
   if (habitatParts.length) tabs.push({ id: 'habitat', label: 'Habitat', content: habitatParts.join('') });
 
   const morfoParts = [];
-  if (hasContent(especie.morfologia)) morfoParts.push(`<p>${especie.morfologia}</p>`);
+  if (hasContent(especie.morfologia)) morfoParts.push(`<p>${escapeHtml(especie.morfologia)}</p>`);
   if (hasImage(especie.im_morfologia)) {
     const title = hasContent(especie.title_im_morfologia) ? especie.title_im_morfologia : 'Morfologia';
     morfoParts.push(`<img src="${imgSrc(especie.im_morfologia)}" class="tab-img" alt="${escapeHtml(title)}" title="${escapeHtml(title)}"/>`);
   }
   if (morfoParts.length) tabs.push({ id: 'morfologia', label: 'Morfologia', content: morfoParts.join('') });
 
-  if (hasContent(especie.reproducao)) tabs.push({ id: 'reproducao', label: 'Reprodução', content: `<p>${especie.reproducao}</p>` });
+  if (hasContent(especie.reproducao)) tabs.push({ id: 'reproducao', label: 'Reprodução', content: `<p>${escapeHtml(especie.reproducao)}</p>` });
 
   const consParts = [];
-  if (hasContent(especie.conservacao)) consParts.push(`<p>${especie.conservacao}</p>`);
+  if (hasContent(especie.conservacao)) consParts.push(`<p>${escapeHtml(especie.conservacao)}</p>`);
   if (hasImage(especie.im_conservacao)) consParts.push(`<img src="${imgSrc(especie.im_conservacao)}" class="tab-img" alt="Conservação"/>`);
   if (consParts.length) tabs.push({ id: 'conservacao', label: 'Conservação', content: consParts.join('') });
 
@@ -740,7 +758,7 @@ function renderTaxonDetailHtml(dados) {
     { chave: 'carac_ordem', img: 'im_ordem', label: 'Ordem' }
   ].forEach(c => {
     if (hasContent(especie[c.chave])) {
-      caracParts.push(`<h4 class="tab-subhead">${c.label}</h4><p>${especie[c.chave]}</p>`);
+      caracParts.push(`<h4 class="tab-subhead">${c.label}</h4><p>${escapeHtml(especie[c.chave])}</p>`);
       if (hasImage(especie[c.img])) caracParts.push(`<img src="${imgSrc(especie[c.img])}" class="tab-img" alt="${c.label}"/>`);
     }
   });
@@ -1106,7 +1124,7 @@ function resetIdentification() {
     if (selectLabel) selectLabel.textContent = 'Selecionar imagem';
     if (dropTitle) dropTitle.textContent = 'Arraste sua imagem aqui';
     if (dropSubtitle) dropSubtitle.textContent = 'ou clique no botão abaixo para selecionar';
-    if (dropFormats) dropFormats.textContent = 'JPG, PNG, WEBP - max. 10MB';
+    if (dropFormats) dropFormats.textContent = `JPG, PNG, WEBP - max. ${formatFileSize(mediaLimits.imageBytes)}`;
   } else {
     const isVideo = identifyMode === 'video';
     const readable = isVideo ? 'vídeo' : 'áudio ou vídeo';
@@ -1193,6 +1211,13 @@ async function handleAirVideo(file) {
   const preview = document.getElementById('airPreview');
   const fileInfo = document.getElementById('airFileInfo');
 
+  if (file && file.size > mediaLimits.videoBytes) {
+    airSelectedFile = null;
+    if (submit) submit.disabled = true;
+    showAirMessage(`O vídeo ultrapassa o limite de ${formatFileSize(mediaLimits.videoBytes)}.`, true);
+    return;
+  }
+
   if (!file || !file.type.startsWith('video/')) {
     airSelectedFile = null;
     if (submit) submit.disabled = true;
@@ -1227,190 +1252,34 @@ async function handleAirVideo(file) {
   }
 }
 
-function airTaxonDetailHtml(item, databaseAvailable) {
-  const taxon = item.dados_taxon || null;
-  const confidence = Number(item.confianca);
-
-  if (!taxon) {
-    const message = databaseAvailable
-      ? item.classe === 'ave'
-        ? 'Ave é uma categoria ampla. A ficha biológica exige a identificação de uma espécie específica.'
-        : 'Esta categoria foi confirmada no vídeo, mas ainda não possui uma ficha correspondente no banco.'
-      : 'A categoria foi confirmada, mas o banco de dados não respondeu durante esta análise.';
-    return `
-      <div class="air-taxon-empty">
-        <span>Categoria confirmada</span>
-        <h3>${escapeHtml(item.nome || item.classe || 'Animal')}</h3>
-        <p>${escapeHtml(message)}</p>
-      </div>
-    `;
-  }
-
-  const scientificName = taxon.especie || item.nome || item.classe || 'Animal identificado';
-  const popularNames = hasContent(taxon.nomes) ? taxon.nomes : item.nome;
-  const mainImageTitle = hasContent(taxon.title_imagem) ? taxon.title_imagem : (popularNames || scientificName);
-  const image = hasImage(taxon.imagem)
-    ? `<img src="${imgSrc(taxon.imagem)}" alt="${escapeHtml(mainImageTitle)}" title="${escapeHtml(mainImageTitle)}">`
-    : `<div class="air-taxon-image-empty" aria-hidden="true">${escapeHtml(String(item.nome || 'A').charAt(0))}</div>`;
-
-  const taxonomyFields = [
-    ['Reino', taxon.reino],
-    ['Filo', taxon.filo],
-    ['Classe', taxon.classe],
-    ['Ordem', taxon.ordem],
-    ['Família', taxon.familia],
-    ['Gênero', taxon.genero]
-  ].filter(([, value]) => hasContent(value));
-  const taxonomy = taxonomyFields.length ? `
-    <dl class="air-taxonomy-grid">
-      ${taxonomyFields.map(([label, value]) => `
-        <div><dt>${label}</dt><dd>${escapeHtml(value)}</dd></div>
-      `).join('')}
-    </dl>
-  ` : '';
-
-  const sections = [
-    ['Habitat', taxon.habitat, null],
-    ['Morfologia', taxon.morfologia, taxon.im_morfologia],
-    ['Reprodução', taxon.reproducao, null],
-    ['Conservação', taxon.conservacao, taxon.im_conservacao]
-  ].filter(([, text, sectionImage]) => hasContent(text) || hasImage(sectionImage));
-  const biologicalSections = sections.length ? `
-    <div class="air-biology-sections">
-      ${sections.map(([title, text, sectionImage], index) => `
-        <details ${index === 0 ? 'open' : ''}>
-          <summary>${title}</summary>
-          ${hasContent(text) ? `<p>${escapeHtml(text)}</p>` : ''}
-          ${hasImage(sectionImage) ? `<img src="${imgSrc(sectionImage)}" alt="${title}">` : ''}
-        </details>
-      `).join('')}
-    </div>
-  ` : '';
-
-  return `
-    <div class="air-taxon-header">
-      <div class="air-taxon-image">${image}</div>
-      <div>
-        <span>Ficha biológica</span>
-        <h3><i>${escapeHtml(scientificName)}</i></h3>
-        ${hasContent(popularNames) ? `<p>${escapeHtml(popularNames)}</p>` : ''}
-        ${Number.isFinite(confidence) ? `<small>${confidence.toFixed(1)}% de confiança na detecção</small>` : ''}
-      </div>
-    </div>
-    ${taxonomy}
-    ${biologicalSections}
-  `;
-}
-
 function renderAirResult(data) {
   const result = document.getElementById('airResultado');
   if (!result) return;
 
-  const labels = {
-    boi: 'Boi',
-    humano: 'Homo sapiens',
-    cachorro: 'Cachorro',
-    gato: 'Gato',
-    ave: 'Ave'
-  };
-  const counts = data.contagens || {};
-  const confidenceByClass = data.confianca_por_classe || {};
-  const confirmedFrames = data.quadros_confirmados || {};
-  const optionalNumber = value => value === null || value === undefined || value === ''
-    ? Number.NaN
-    : Number(value);
-  const payloadEntries = Array.isArray(data.identificados) ? data.identificados : [];
-  const entries = (payloadEntries.length ? payloadEntries : ['boi', 'humano', 'cachorro', 'gato', 'ave'].map(key => ({
-    classe: key,
-    nome: labels[key],
-    quantidade: Number(counts[key] || 0),
-    confianca: confidenceByClass[key],
-    quadros_confirmados: confirmedFrames[key],
-    dados_taxon: null
-  })))
-    .map(item => ({
-      ...item,
-      nome: item.nome || labels[item.classe] || item.classe,
-      quantidade: Number(item.quantidade ?? counts[item.classe] ?? 0),
-      confianca: optionalNumber(item.confianca ?? confidenceByClass[item.classe]),
-      quadros_confirmados: Number(item.quadros_confirmados ?? confirmedFrames[item.classe] ?? 0)
-    }))
-    .filter(item => item.quantidade > 0)
-    .sort((a, b) => b.quantidade - a.quantidade);
-
-  const total = Number(data.total_estimado ?? entries.reduce((sum, item) => sum + item.quantidade, 0));
-  const duration = Number(data.duracao);
-  const analyzedFrames = Number(data.frames_analisados || 0);
-  const topConfidence = optionalNumber(data.maior_confianca);
-  const detections = entries.length ? entries.map((item, index) => `
-    <button type="button" role="tab" class="air-detection-card ${index === 0 ? 'is-active' : ''}" data-air-result-index="${index}" aria-selected="${index === 0 ? 'true' : 'false'}">
-      <span class="air-detection-index">${String(index + 1).padStart(2, '0')}</span>
-      <span class="air-detection-name">
-        <strong>${escapeHtml(item.nome)}</strong>
-        <small>${item.quadros_confirmados} ${item.quadros_confirmados === 1 ? 'quadro confirmado' : 'quadros confirmados'}</small>
-      </span>
-      <span class="air-detection-count">
-        <strong>${item.quantidade}</strong>
-        <small>${item.quantidade === 1 ? 'animal' : 'animais'}</small>
-      </span>
-      <span class="air-detection-confidence">${Number.isFinite(item.confianca) ? `${item.confianca.toFixed(1)}%` : 'N/A'}</span>
-    </button>
-  `).join('') : `
-    <div class="air-detection-empty">
-      <span aria-hidden="true">00</span>
-      <div>
-        <strong>Nenhuma detecção consistente</strong>
-        <p>Ocorrências isoladas foram descartadas para evitar uma contagem incorreta.</p>
-      </div>
-    </div>
-  `;
-
-  const information = entries.length ? `
-    <section class="air-information-section" aria-label="Ficha biológica da categoria selecionada">
-      <p class="air-information-label">Ficha da categoria selecionada</p>
-      <div id="airTaxonDetail" class="air-taxon-detail"></div>
-    </section>
-  ` : '';
+  const labels = { boi: 'Bovinos', humano: 'Humanos', ave: 'Aves' };
+  const target = data.alvo_contagem || document.getElementById('airTargetValue')?.value || 'boi';
+  const count = Math.max(0, Math.floor(Number(data.contagens?.[target]) || 0));
+  const label = labels[target] || 'Animais';
 
   result.hidden = false;
   result.innerHTML = `
     <section class="air-result-overview">
       <div class="air-result-head">
-        <p class="air-result-label">Análise concluída</p>
-        <h2><strong>${total}</strong><span>${total === 1 ? 'espécime confirmado' : 'espécimes confirmados'}</span></h2>
-        <p>A contagem considera somente ocorrências recorrentes ao longo do vídeo.</p>
+        <p class="air-result-label">Contagem concluída</p>
+        <h2><strong>${count}</strong><span>${count === 1 ? 'espécime contado' : 'espécimes contados'}</span></h2>
       </div>
-      <dl class="air-result-metrics">
-        <div><dt>Duração</dt><dd>${Number.isFinite(duration) ? `${duration.toFixed(1)}s` : 'N/A'}</dd></div>
-        <div><dt>Quadros</dt><dd>${analyzedFrames || 'N/A'}</dd></div>
-        <div><dt>Maior confiança</dt><dd>${Number.isFinite(topConfidence) ? `${topConfidence.toFixed(1)}%` : 'N/A'}</dd></div>
-      </dl>
     </section>
-    <section class="air-result-catalog" aria-label="Animais identificados">
-      <header>
-        <span>Identificados</span>
-        ${entries.length > 1 ? '<p>Selecione uma categoria para consultar sua ficha.</p>' : ''}
-      </header>
-      <div class="air-detection-list" role="tablist">${detections}</div>
+    <section class="air-result-catalog" aria-label="Animais contados">
+      <header><span>Espécimes contados</span></header>
+      <div class="air-detection-list">
+        <div class="air-detection-card">
+          <span class="air-detection-index">01</span>
+          <span class="air-detection-name"><strong>${escapeHtml(label)}</strong></span>
+          <span class="air-detection-count"><strong>${count}</strong><small>${count === 1 ? 'espécime' : 'espécimes'}</small></span>
+        </div>
+      </div>
     </section>
-    ${information}
   `;
-
-  const detail = result.querySelector('#airTaxonDetail');
-  const pickerButtons = result.querySelectorAll('[data-air-result-index]');
-  const renderDetail = index => {
-    const item = entries[index] || entries[0];
-    if (!detail || !item) return;
-    detail.innerHTML = airTaxonDetailHtml(item, data.banco_disponivel !== false);
-    pickerButtons.forEach((button, buttonIndex) => {
-      const active = buttonIndex === index;
-      button.classList.toggle('is-active', active);
-      button.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-  };
-  pickerButtons.forEach((button, index) => button.addEventListener('click', () => renderDetail(index)));
-  renderDetail(0);
-
   result.classList.add('air-result-ready');
   setTimeout(() => result.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
 }
@@ -1479,7 +1348,9 @@ function setIdentifyMode(mode, label) {
   if (selectLabel) selectLabel.textContent = isVideo ? 'Selecionar vídeo' : 'Selecionar áudio ou vídeo';
   if (dropTitle) dropTitle.textContent = `Arraste seu ${readable} aqui`;
   if (dropSubtitle) dropSubtitle.textContent = 'ou clique no botão abaixo para selecionar';
-  if (dropFormats) dropFormats.textContent = isVideo ? 'MP4, MOV, AVI, MKV ou WEBM - max. 60s' : 'MP3, WAV, M4A, OGG, WEBM, MP4 ou MOV';
+  if (dropFormats) dropFormats.textContent = isVideo
+    ? `MP4, MOV, AVI, MKV ou WEBM - max. 60s / ${formatFileSize(mediaLimits.videoBytes)}`
+    : `MP3, WAV, M4A, OGG, WEBM, MP4 ou MOV - max. ${mediaLimits.audioSeconds}s / ${formatFileSize(mediaLimits.audioBytes)}`;
   if (result) result.innerHTML = '';
 }
 

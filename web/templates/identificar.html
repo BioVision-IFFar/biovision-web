@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Outfit:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='1805') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
   <meta name="theme-color" content="#010302">
 
@@ -135,7 +135,8 @@
     <div class="zoom-content" id="zoomContent"></div>
   </div>
 
-  <script src="{{ url_for('static', filename='js/app.js', v='2008') }}"></script>
+  <script>window.BIOVISION_LIMITS = {{ media_limits|tojson }};</script>
+  <script src="{{ url_for('static', filename='js/app.js', v='2009') }}"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/biovision/service-worker.js").catch(() => {});

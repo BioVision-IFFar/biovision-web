@@ -1,4 +1,4 @@
-const CACHE_NAME = 'biovision-v19';
+const CACHE_NAME = 'biovision-v22';
 const STATIC_ASSETS = [
   '/biovision/',
   '/biovision/identificar',
@@ -38,7 +38,7 @@ self.addEventListener('fetch', event => {
   const request = event.request;
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith('/biovision/jobs/')) return;
+  if (!STATIC_ASSETS.includes(url.pathname)) return;
 
   event.respondWith(
     fetch(request)

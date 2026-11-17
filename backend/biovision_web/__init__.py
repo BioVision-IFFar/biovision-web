@@ -1,21 +1,30 @@
-from flask import Flask, jsonify
+from flask import Flask
 
-from .config import MAX_CONTENT_LENGTH, PRELOAD_MODELS, STATIC_DIR, TEMPLATES_DIR
+from .config import (
+    AUDIO_MAX_BYTES, AUDIO_MAX_SECONDS, IMAGE_MAX_BYTES, MAX_CONTENT_LENGTH,
+    PRELOAD_MODELS, TEMPLATES_DIR, VIDEO_MAX_BYTES,
+)
 
 
 def create_app(preload_models=None):
     app = Flask(
         "biovision_web",
-        static_url_path="/static_biovision",
-        static_folder=str(STATIC_DIR),
+        static_folder=None,
         template_folder=str(TEMPLATES_DIR),
     )
     app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+    app.config["MAX_FORM_MEMORY_SIZE"] = 256 * 1024
+    app.config["MAX_FORM_PARTS"] = 4
     app.json.ensure_ascii = False
 
-    @app.errorhandler(413)
-    def arquivo_muito_grande(_error):
-        return jsonify({"erro": "O arquivo ultrapassa o limite de 250 MB."}), 413
+    from .security import install_security
+
+    install_security(app)
+
+    @app.context_processor
+    def media_limits():
+        return {"media_limits": {"imageBytes": IMAGE_MAX_BYTES, "videoBytes": VIDEO_MAX_BYTES,
+                                 "audioBytes": AUDIO_MAX_BYTES, "audioSeconds": AUDIO_MAX_SECONDS}}
 
     from .routes import register_routes
 

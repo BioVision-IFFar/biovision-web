@@ -1,9 +1,14 @@
 import copy
+import gzip
+import json
+import logging
 import threading
+from functools import lru_cache
+from urllib.parse import quote, unquote, urlsplit
 
 import mysql.connector
 
-from .config import DB_CONFIG, IMAGE_BASE_URL
+from .config import DB_CONFIG, IMAGE_BASE_URL, LEGACY_IMAGE_HOSTS, SPECIES_CATALOG_PATH
 
 
 IMAGE_FIELDS = (
@@ -33,6 +38,25 @@ AIR_CLASS_DB_ALIASES = {
 
 taxon_cache = {}
 taxon_lock = threading.Lock()
+logger = logging.getLogger(__name__)
+
+# Complemento local: funciona em foto/vídeo mesmo sem registro no MySQL.
+# Taxonomia: ITIS TSN 180092. Foto: NASA, retrato de Christina Koch (2023).
+HOMO_SAPIENS = {
+    "especie": "Homo sapiens", "nomes": "Ser humano, humano",
+    "imagem": "/static_biovision/species/homo_sapiens.jpg",
+    "title_imagem": "Ser humano (Homo sapiens): Christina Koch. Foto: NASA (2023), uso educativo.",
+    "reino": "Animalia", "filo": "Chordata", "classe": "Mammalia",
+    "ordem": "Primates", "familia": "Hominidae", "genero": "Homo",
+    "habitat": "Espécie de distribuição mundial, presente em ambientes terrestres muito diversos, incluindo cidades, campos e florestas.",
+    "morfologia": "Primata de postura ereta e locomoção bípede, com mãos capazes de movimentos precisos, polegares oponíveis e grande desenvolvimento cerebral.",
+    "reproducao": "Reprodução sexuada, fecundação interna e desenvolvimento vivíparo. A gestação dura aproximadamente nove meses, seguida de cuidado parental prolongado.",
+    "conservacao": "Espécie amplamente distribuída. Suas atividades têm grande influência na conservação dos ambientes e de outras espécies.",
+    "carac_reino": "Animal multicelular e heterótrofo, que obtém energia consumindo outros organismos ou seus produtos.",
+    "carac_filo": "Vertebrado do filo Chordata, com esqueleto interno e coluna vertebral.",
+    "carac_classe": "Mamífero com pelos, glândulas mamárias e regulação da temperatura corporal.",
+    "carac_ordem": "Primata com visão binocular e mãos adaptadas à manipulação de objetos.",
+}
 
 
 def nome_classe_legivel(nome):
@@ -73,14 +97,30 @@ def montar_url_imagem(caminho):
         except UnicodeDecodeError:
             return None
 
-    caminho = str(caminho).strip()
-    if not caminho:
+    caminho = str(caminho).strip().replace("\\", "/")
+    if not caminho or caminho.casefold() in {"null", "none", "n/a"}:
         return None
-    if caminho.startswith(("https://", "http://")):
-        return caminho
+    try:
+        parsed = urlsplit(caminho)
+        if parsed.scheme:
+            if parsed.scheme not in {"https", "http"} or not parsed.netloc or parsed.username or parsed.password:
+                return None
+            if parsed.hostname not in LEGACY_IMAGE_HOSTS:
+                return caminho
+            caminho = parsed.path
+        elif parsed.netloc:
+            return None
+    except ValueError:
+        return None
+    caminho = unquote(caminho).lstrip("/")
+    if not caminho or any(part in {".", ".."} for part in caminho.split("/")):
+        return None
+    caminho = quote(caminho, safe="/")
+    if caminho.startswith("static_biovision/"):
+        return f"/{caminho}"
     if not IMAGE_BASE_URL:
         return None
-    return f"{IMAGE_BASE_URL}/{caminho.lstrip('/')}"
+    return f"{IMAGE_BASE_URL}/{caminho}"
 
 
 def limpar_resultado_banco(resultado):
@@ -103,12 +143,38 @@ def limpar_resultado_banco(resultado):
     return limpo
 
 
+@lru_cache(maxsize=1)
+def carregar_catalogo_local():
+    try:
+        with gzip.open(SPECIES_CATALOG_PATH, "rt", encoding="utf-8") as source:
+            records = json.load(source)
+        return {
+            nome_classe_legivel(record["especie"]).casefold(): record
+            for record in records
+        }
+    except (OSError, EOFError, ValueError, TypeError, KeyError):
+        logger.exception("Não foi possível carregar o catálogo local de espécies")
+        return {}
+
+
+def informacoes_catalogo_local(nome_especie):
+    key = nome_classe_legivel(nome_especie).casefold()
+    record = carregar_catalogo_local().get(key)
+    return limpar_resultado_banco(copy.deepcopy(record)) if record else None
+
+
 def buscar_informacoes_especie(nome_especie):
+    normalized = nome_classe_legivel(nome_especie).casefold()
+    if normalized in {"homo sapiens", "homo sapien", "humano", "pessoa"}:
+        return copy.deepcopy(HOMO_SAPIENS)
     cache_key = str(nome_especie or "").strip().lower()
     if cache_key:
         with taxon_lock:
             if cache_key in taxon_cache:
                 return copy.deepcopy(taxon_cache[cache_key])
+
+    if not DB_CONFIG.get("host") or not DB_CONFIG.get("user"):
+        return informacoes_catalogo_local(nome_especie)
 
     conn = None
     cursor = None
@@ -124,14 +190,23 @@ def buscar_informacoes_especie(nome_especie):
             if resultado:
                 break
 
+        if resultado is None:
+            return informacoes_catalogo_local(nome_especie)
+        # Completar campos vazios com a ficha existente, sem sobrescrever os
+        # dados preenchidos/atualizados no MySQL.
+        fallback = informacoes_catalogo_local(nome_especie) or {}
+        resultado = {**fallback, **{
+            key: value for key, value in resultado.items()
+            if value is not None and (not isinstance(value, str) or value.strip())
+        }}
         resultado = limpar_resultado_banco(resultado)
         if cache_key and resultado is not None:
             with taxon_lock:
                 taxon_cache[cache_key] = copy.deepcopy(resultado)
         return copy.deepcopy(resultado)
-    except Exception as exc:
-        print(f"Erro no MySQL: {exc}")
-        return None
+    except Exception:
+        logger.exception("Falha ao consultar MySQL; usando a ficha do catálogo local")
+        return informacoes_catalogo_local(nome_especie)
     finally:
         if cursor is not None:
             try:
